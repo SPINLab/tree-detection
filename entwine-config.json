@@ -1,0 +1,11 @@
+{
+    "input": "~/VU_ObjectDetection/filtered_pts.laz",
+    "output": "~/VU_ObjectDetection/filtered_ept/",
+    "reprojection": {
+        "in": "EPSG:28992",
+        "out": "EPSG:28992",
+        "hammer": true
+    },
+    "scale": 0.001,
+    "threads": 4
+}
