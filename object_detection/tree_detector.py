@@ -5,13 +5,12 @@ import time
 import numpy as np
 import pandas as pd
 import pdal
-from geopandas import GeoDataFrame
+from geopandas import GeoDataFrame, sjoin
 from scipy.spatial.qhull import ConvexHull
 from shapely import geometry
 from shapely.geometry import Point
 from shapely.wkt import loads
 from sklearn.preprocessing import StandardScaler
-from numpy.lib import recfunctions as rfn
 from hdbscan import HDBSCAN
 
 
@@ -24,13 +23,16 @@ class Detector_tree:
         self.box = box
         self.xmin, self.ymin, self.xmax, self.ymax = box
         self.wkt_box = geometry.box(self.xmin, self.ymin, self.xmax, self.ymax).wkt
+        start = time.time()
         self.raw_points = self.ept_reader(self.wkt_box)
+        end = time.time()
+        print(f'reading from the ept took {round(end - start,2)}')
         print(f'Total amount of points read: {self.raw_points.shape[0]}')
         self.tree_df = GeoDataFrame({'clusterID': [],
                                      'geometry': []})
 
         # Masks
-        self.groundmask = self.raw_points['Classification'] == 2
+        self.groundmask = self.raw_points['Classification'] != 2
         self.n_returnsmask = self.raw_points['NumberOfReturns'] >= 3
 
 
@@ -90,64 +92,52 @@ class Detector_tree:
 
     def preprocess(self, points):
         f_pts = pd.DataFrame(points)
-
-        f_pts = f_pts[np.logical_and(self.n_returnsmask, self.groundmask)]
+        # f_pts = f_pts[np.logical_and(self.n_returnsmask, self.groundmask)]
         data = f_pts.drop(['X', 'Y', 'Z'], axis=1)
         scaler = StandardScaler()
         scaler.fit(data)
         normalized_pointcloud = pd.DataFrame(scaler.transform(data), columns=data.columns)
-        normalized_pointcloud = f_pts[['X', 'Y', 'Z']].join(normalized_pointcloud)
         normalized_pointcloud['pid'] = normalized_pointcloud.index
 
         return normalized_pointcloud
 
-    def create_writable_pointcloud(self, initial_columns=['X', 'Y', 'Z', 'Red', 'Green', 'Blue', 'Intensity', 'ReturnNumber'],
-                                   added_column_name='', added_column_data=np.array([])):
-        if not self.mask:
-            print('I did not find a mask, created writable pointcloud from copy of input')
-            self.mask = [True]*self.raw_points.shape[0]
-
-        if initial_columns:
-            self.out_pts = self.raw_points[initial_columns]
-            if added_column_name:
-                rfn.append_fields(
-                    added_column_data,
-                    'Classification',
-                    self.normalized_pointcloud[self.mask][added_column_name]
-                )
-
     def cluster_on_xy(self, min_cluster_size, min_samples):
         start = time.time()
-        xy = self.raw_points[['X', 'Y']][np.logical_and(self.groundmask, self.n_returnsmask)]
-        xy = np.array([xy['X'],
-                       xy['Y']]).T
+        xyz = self.raw_points[['X',
+                               'Y',
+                               'Z']][np.logical_and(self.groundmask, self.n_returnsmask)]
+        xy = np.array([xyz['X'],
+                       xyz['Y']]).T
         xy_clusterer = HDBSCAN(min_cluster_size=min_cluster_size,
                                min_samples=min_samples)
         xy_clusterer.fit(xy)
-        self.normalized_pointcloud['xy_clusterID'] = xy_clusterer.labels_
+        self.clustered_points = pd.DataFrame({'X': xyz['X'],
+                                              'Y': xyz['Y'],
+                                              'Z': xyz['Z'],
+                                              'Red': self.raw_points['Red'][np.logical_and(self.groundmask,
+                                                                                           self.n_returnsmask)],
+                                              'Green': self.raw_points['Green'][np.logical_and(self.groundmask,
+                                                                                               self.n_returnsmask)],
+                                              'Blue': self.raw_points['Blue'][np.logical_and(self.groundmask,
+                                                                                             self.n_returnsmask)],
+                                              'Classification': xy_clusterer.labels_})
+
         end = time.time()
         print(f'clustering took {round(end - start, 2)} seconds')
 
-    def kmean_cluster(self):
+    def kmean_cluster(self, wkt_polygon):
         # TODO points of interest are the non-masked points within a tree cluster
-        xyz = [Point(coords) for coords in zip(self.raw_points['X'], self.raw_points['Y'], self.raw_points['Z'])]
-        self.pre_process(self.raw_points[self.groundmask]['Red', 'Green', 'Blue', 'Intensity', 'ReturnNumber', 'NumberOfReturns'])
-        for treeID in self.tree_df.clusterID:
-            if treeID >= 0:
-                geometry = self.tree_df.loc[treeID, 'geometry']
+        cluster_points = self.raw_points[self.groundmask]
+        xyz = [Point(coords) for coords in zip(cluster_points['X'], cluster_points['Y'], cluster_points['Z'])]
+        cluster_data = self.preprocess(cluster_points[['X', 'Y', 'Z', 'Red', 'Green', 'Blue', 'Intensity', 'ReturnNumber', 'NumberOfReturns']])
+        gdf = GeoDataFrame(cluster_data, geometry=xyz)
 
+        pointInPolys = sjoin(gdf, loads(wkt_polygon), how='left')
 
+        return gdf
 
-        for name, group in st_data.groupby('xy_clusterID'):
-            if group.shape[0] >= 2000:
-                value_clusterer = HDBSCAN(min_cluster_size=40, min_samples = 10)
-                value_clusterer.fit(group.loc[:,['X','Y','Z']].T)
-                labs = np.append(labs, value_clusterer.labels_)
-            else:
-                labs = np.append(labs, [1] * group.shape[0])
-
-    def convex_hullify(self):
-        for name, group in self.normalized_pointcloud.groupby('xy_clusterID'):
+    def convex_hullify(self, points):
+        for name, group in points.groupby('Classification'):
             coords = np.array([group.X, group.Y]).T
             polygon = ConvexHull(coords)
             wkt = 'POLYGON (('
