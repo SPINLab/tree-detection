@@ -8,6 +8,7 @@ import pdal
 from geopandas import GeoDataFrame
 from scipy.spatial.qhull import ConvexHull
 from shapely import geometry
+from shapely.geometry import Point
 from shapely.wkt import loads
 from sklearn.preprocessing import StandardScaler
 from numpy.lib import recfunctions as rfn
@@ -31,9 +32,8 @@ class Detector_tree:
         # Masks
         self.groundmask = self.raw_points['Classification'] == 2
         self.n_returnsmask = self.raw_points['NumberOfReturns'] >= 3
-        self.preprocess()
 
-        print(f'Total amount of points in pre processed frame: {self.normalized_pointcloud.shape[0]}')
+
 
 
     def ept_reader(self, polygon_wkt: str) -> np.ndarray:
@@ -88,18 +88,18 @@ class Detector_tree:
 
 
 
-    def preprocess(self):
-        f_pts = pd.DataFrame(self.raw_points[['X', 'Y', 'Z',
-                                              'Red', 'Green', 'Blue',
-                                              'Intensity', 'ReturnNumber', 'NumberOfReturns']])
+    def preprocess(self, points):
+        f_pts = pd.DataFrame(points)
 
         f_pts = f_pts[np.logical_and(self.n_returnsmask, self.groundmask)]
         data = f_pts.drop(['X', 'Y', 'Z'], axis=1)
         scaler = StandardScaler()
         scaler.fit(data)
-        self.normalized_pointcloud = pd.DataFrame(scaler.transform(data), columns=data.columns)
-        self.normalized_pointcloud = f_pts[['X', 'Y', 'Z']].join(self.normalized_pointcloud)
-        self.normalized_pointcloud['pid'] = self.normalized_pointcloud.index
+        normalized_pointcloud = pd.DataFrame(scaler.transform(data), columns=data.columns)
+        normalized_pointcloud = f_pts[['X', 'Y', 'Z']].join(normalized_pointcloud)
+        normalized_pointcloud['pid'] = normalized_pointcloud.index
+
+        return normalized_pointcloud
 
     def create_writable_pointcloud(self, initial_columns=['X', 'Y', 'Z', 'Red', 'Green', 'Blue', 'Intensity', 'ReturnNumber'],
                                    added_column_name='', added_column_data=np.array([])):
@@ -118,8 +118,9 @@ class Detector_tree:
 
     def cluster_on_xy(self, min_cluster_size, min_samples):
         start = time.time()
-        xy = np.array([self.normalized_pointcloud.X,
-                       self.normalized_pointcloud.Y]).T
+        xy = self.raw_points[['X', 'Y']][np.logical_and(self.groundmask, self.n_returnsmask)]
+        xy = np.array([xy['X'],
+                       xy['Y']]).T
         xy_clusterer = HDBSCAN(min_cluster_size=min_cluster_size,
                                min_samples=min_samples)
         xy_clusterer.fit(xy)
@@ -128,6 +129,9 @@ class Detector_tree:
         print(f'clustering took {round(end - start, 2)} seconds')
 
     def kmean_cluster(self):
+        # TODO points of interest are the non-masked points within a tree cluster
+        xyz = [Point(coords) for coords in zip(self.raw_points['X'], self.raw_points['Y'], self.raw_points['Z'])]
+        self.pre_process(self.raw_points[self.groundmask]['Red', 'Green', 'Blue', 'Intensity', 'ReturnNumber', 'NumberOfReturns'])
         for treeID in self.tree_df.clusterID:
             if treeID >= 0:
                 geometry = self.tree_df.loc[treeID, 'geometry']
