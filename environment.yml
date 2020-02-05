@@ -1,0 +1,14 @@
+name: tree-detection
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python>=3.6
+  - numpy>=1.15.4
+  - matplotlib>=3.0.2
+  - pillow>=5.4.1
+  - requests>=2.21.0
+  - owslib>=0.17.0
+  - pdal>=1.8.0
+  - python-pdal>=2.1.8
+  - pyproj>=1.9.6
