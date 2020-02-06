@@ -39,3 +39,4 @@ def write_to_laz(structured_array, path):
 def dataframe_to_laz(dataframe, laz_fn):
     result = dataframe.to_records()
     write_to_laz(result, laz_fn)
+
