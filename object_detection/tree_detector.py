@@ -5,8 +5,10 @@ import time
 import numpy as np
 import pandas as pd
 import pdal
+from geoalchemy2 import WKTElement, Geometry
 from geopandas import GeoDataFrame, sjoin
 from kneed import KneeLocator
+from scipy.spatial.distance import cdist
 from scipy.spatial.qhull import ConvexHull
 from shapely import geometry
 from shapely.geometry import Point
@@ -14,6 +16,7 @@ from shapely.wkt import loads
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from hdbscan import HDBSCAN
+from sqlalchemy import create_engine
 
 
 class Detector_tree:
@@ -92,19 +95,13 @@ class Detector_tree:
 
         f_pts['pid'] = f_pts.index
         columns_to_keep = [column for column in f_pts.columns if column not in ['pid', 'X', 'Y', 'Z']]
-        scaler = StandardScaler().fit(f_pts[columns_to_keep])
+        scaler = StandardScaler()
+        scaler.fit(f_pts[columns_to_keep])
 
         f_pts[columns_to_keep] = scaler.transform(f_pts[columns_to_keep])
 
         normalized_pointcloud = pd.DataFrame(f_pts,
                                              columns=f_pts.columns)
-
-        # normalized_pointcloud = pd.merge(left=normalized_pointcloud,
-        #                                  right=f_pts[['Z', 'pid']],
-        #                                  left_on='pid',
-        #                                  right_on='pid',
-        #                                  how='left')
-
         return normalized_pointcloud
 
     def cluster_on_xy(self, min_cluster_size, min_samples):
@@ -123,22 +120,27 @@ class Detector_tree:
                                               'Blue': masked_points['Blue'],
                                               'Classification': xy_clusterer.labels_})
         end = time.time()
-        print(f'clustering took {round(end - start, 2)} seconds')
+        print(f'clustering on xy took {round(end - start, 2)} seconds')
 
     def convex_hullify(self, points):
+        try:
+            self.tree_df.drop(self.tree_df.index, inplace=True)
+        except:
+            pass
+
         for name, group in points.groupby('Classification'):
             coords = np.array([group.X, group.Y]).T
             polygon = ConvexHull(coords)
 
             # build wkt string
             wkt = 'POLYGON (('
-            for id in polygon.vertices:
-                x, y = polygon.points[id]
+            for group_id in polygon.vertices:
+                x, y = polygon.points[group_id]
                 wkt += f'{x} {y},'
             # close the polygon
             firstx, firsty = polygon.points[polygon.vertices[0]]
             wkt = wkt + f'{firstx} {firsty}))'
-
+            # write to df
             self.tree_df.loc[len(self.tree_df)] = [int(name), loads(wkt)]
 
     def find_points_in_polygons(self):
@@ -167,7 +169,6 @@ class Detector_tree:
         self.grouped_points = grouped_points.rename(columns={'index_right': 'polygon_id'})
 
     def kmean_cluster(self):
-
         labs = np.array([])
         n_ids = np.array([])
 
@@ -203,22 +204,47 @@ class Detector_tree:
         self.grouped_points['Classification'] = pd.factorize(combi_ids)[0]
 
     def find_n_clusters(self, cluster_data, krange_min, krange_max):
-        sum_squared_dist = []
-        if krange_min == krange_max:
+        distortions = []
+        kmean_range = range(krange_min, krange_max)
+        if len(kmean_range) <= 1:
             return krange_min
 
-        for k in range(krange_min, krange_max):
-            print(f'finding inertia for {k} clusters')
+        for k in kmean_range:
             kmeans = KMeans(n_clusters=k).fit(cluster_data)
-            sum_squared_dist.append(kmeans.inertia_)
-        knee = KneeLocator(x=range(1, len(sum_squared_dist) + 1),
-                           y=sum_squared_dist,
+            distortions.append(
+                sum(np.min(cdist(cluster_data, kmeans.cluster_centers_, 'euclidean'), axis=1)) /
+                cluster_data.shape[0])
+        print(distortions)
+        knee = KneeLocator(x=range(1, len(distortions) + 1),
+                           y=distortions,
                            curve='convex',
-                           direction='decreasing'
-                           )
-        return knee.knee
+                           direction='decreasing')
 
+        # TODO: handle this better
+        if knee.knee:
+            return knee.knee
+        else:
+            return round(krange_max / krange_min)
 
+    def df_to_PG(self,
+                 geodataframe,
+                 schema,
+                 table_name,
+                 database='VU',
+                 port='5432',
+                 host='leda.geodan.nl',
+                 username='arnot',
+                 password=''):
 
+        engine = create_engine(f'postgresql://{username}@{host}:{port}/{database}')
+        geodataframe['geom'] = geodataframe['geometry'].apply(lambda x: WKTElement(x.wkt, srid=28992))
+        geodataframe.drop('geometry', 1, inplace=True)
+        print('warning! For now everything in the database is replaced!!!')
 
+        geodataframe.to_sql(table_name,
+                            engine,
+                            if_exists='replace',
+                            index=False,
+                            schema=schema,
+                            dtype={'geom': Geometry('Polygon', srid=28992)})
 
