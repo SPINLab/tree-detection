@@ -122,7 +122,6 @@ class Detector_tree:
                                               'Green': masked_points['Green'],
                                               'Blue': masked_points['Blue'],
                                               'Classification': xy_clusterer.labels_})
-
         end = time.time()
         print(f'clustering took {round(end - start, 2)} seconds')
 
@@ -130,6 +129,8 @@ class Detector_tree:
         for name, group in points.groupby('Classification'):
             coords = np.array([group.X, group.Y]).T
             polygon = ConvexHull(coords)
+
+            # build wkt string
             wkt = 'POLYGON (('
             for id in polygon.vertices:
                 x, y = polygon.points[id]
@@ -137,14 +138,17 @@ class Detector_tree:
             # close the polygon
             firstx, firsty = polygon.points[polygon.vertices[0]]
             wkt = wkt + f'{firstx} {firsty}))'
+
             self.tree_df.loc[len(self.tree_df)] = [int(name), loads(wkt)]
 
-    def merge_points_polygons(self):
+    def find_points_in_polygons(self):
         cluster_points = self.raw_points[self.groundmask]
         xy = [Point(coords) for coords in zip(cluster_points['X'], cluster_points['Y'], cluster_points['Z'])]
 
         cluster_data = self.preprocess(
-            cluster_points[['X', 'Y', 'Z', 'Red', 'Green', 'Blue', 'Intensity', 'ReturnNumber', 'NumberOfReturns']]
+            cluster_points[['X', 'Y', 'Z',
+                            'Red', 'Green', 'Blue',
+                            'Intensity', 'ReturnNumber', 'NumberOfReturns']]
         )
 
         points_df = GeoDataFrame(cluster_data, geometry=xy)
@@ -156,8 +160,10 @@ class Detector_tree:
         # dirty hack, hope not to many points go missing
         print(f'removing {np.isnan(grouped_points.index_right).sum()} mystery nans <- merge_points_polygons')
         grouped_points = grouped_points[~np.isnan(grouped_points.index_right)]
-        # grouped_points['Z'] = grouped_points.apply(lambda p: p.Z)
 
+        # remove noise
+        print(f'Removed {np.array([grouped_points.xy_clusterID < 0]).sum()} noise points')
+        grouped_points = grouped_points[grouped_points.xy_clusterID >= 0]
         self.grouped_points = grouped_points.rename(columns={'index_right': 'polygon_id'})
 
     def kmean_cluster(self):
@@ -167,16 +173,21 @@ class Detector_tree:
 
         for name, group in self.grouped_points.groupby('xy_clusterID'):
             print(name)
-            # TODO there are between area / 200 and area / 20 clusters per polygon
-            krange = self.tree_df[name, 'geometry'].area
-            if group.shape[0] >= 10000:
+            tree_area = float(self.tree_df.loc[self.tree_df['xy_clusterID'] == int(name)].geometry.area)
+            if name >= 0 and tree_area >= 2:
+                # TODO there are between (area / 200) and (area / 40) clusters per polygon
+                krange_min = max(1, round(tree_area / 200))
+                krange_max = max(1, round(tree_area / 40))
+                print(f'area of group {int(name)} is: {tree_area}')
                 print(f'there are {group.shape[0]} points in group {name}')
+
                 cluster_data = np.array([group.X,
                                          group.Y,
                                          group.Z]).T
 
-                n_clusters = self.find_n_clusters(cluster_data, krange)
-
+                print(f'the range is {len(range(krange_min, krange_max))}')
+                n_clusters = self.find_n_clusters(cluster_data, krange_min, krange_max)
+                print(f'trying {n_clusters} clusters')
                 kmeans = KMeans(n_clusters=n_clusters).fit(cluster_data)
                 labs = np.append(labs, kmeans.labels_)
             else:
@@ -191,15 +202,20 @@ class Detector_tree:
                      self.grouped_points[['value_clusterID', 'xy_clusterID']].values.astype(str)]
         self.grouped_points['Classification'] = pd.factorize(combi_ids)[0]
 
-    def find_n_clusters(self, cluster_data, krange):
+    def find_n_clusters(self, cluster_data, krange_min, krange_max):
         sum_squared_dist = []
-        for k in krange:
+        if krange_min == krange_max:
+            return krange_min
+
+        for k in range(krange_min, krange_max):
+            print(f'finding inertia for {k} clusters')
             kmeans = KMeans(n_clusters=k).fit(cluster_data)
             sum_squared_dist.append(kmeans.inertia_)
         knee = KneeLocator(x=range(1, len(sum_squared_dist) + 1),
                            y=sum_squared_dist,
                            curve='convex',
-                           direction='decreasing')
+                           direction='decreasing'
+                           )
         return knee.knee
 
 
