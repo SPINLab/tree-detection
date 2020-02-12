@@ -40,3 +40,5 @@ def dataframe_to_laz(dataframe, laz_fn):
     result = dataframe.to_records()
     write_to_laz(result, laz_fn)
 
+def round_to_val(a, round_val):
+    return np.round(np.array(a, dtype=float) / round_val) * round_val

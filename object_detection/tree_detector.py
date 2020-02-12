@@ -8,6 +8,7 @@ import pdal
 from geoalchemy2 import WKTElement, Geometry
 from geopandas import GeoDataFrame, sjoin
 from kneed import KneeLocator
+from scipy.interpolate import griddata
 from scipy.spatial.distance import cdist
 from scipy.spatial.qhull import ConvexHull
 from shapely import geometry
@@ -17,6 +18,8 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from hdbscan import HDBSCAN
 from sqlalchemy import create_engine
+from skimage.feature import peak_local_max
+from object_detection.helper_functions import round_to_val
 
 
 class Detector_tree:
@@ -119,6 +122,7 @@ class Detector_tree:
                                               'Green': masked_points['Green'],
                                               'Blue': masked_points['Blue'],
                                               'Classification': xy_clusterer.labels_})
+        self.clustered_points = self.clustered_points[self.clustered_points.Classification >= 0]
         end = time.time()
         print(f'clustering on xy took {round(end - start, 2)} seconds')
 
@@ -129,19 +133,27 @@ class Detector_tree:
             pass
 
         for name, group in points.groupby('Classification'):
-            coords = np.array([group.X, group.Y]).T
-            polygon = ConvexHull(coords)
+            if group.shape[0] <= 3:
+                points.drop(points.groupby('Classification').get_group(name).index)
+            else:
+                coords = np.array([group.X, group.Y]).T
+                polygon = ConvexHull(coords)
 
-            # build wkt string
-            wkt = 'POLYGON (('
-            for group_id in polygon.vertices:
-                x, y = polygon.points[group_id]
-                wkt += f'{x} {y},'
-            # close the polygon
-            firstx, firsty = polygon.points[polygon.vertices[0]]
-            wkt = wkt + f'{firstx} {firsty}))'
-            # write to df
-            self.tree_df.loc[len(self.tree_df)] = [int(name), loads(wkt)]
+                # build wkt string
+                wkt = 'POLYGON (('
+                for group_id in polygon.vertices:
+                    x, y = polygon.points[group_id]
+                    wkt += f'{x} {y},'
+                # close the polygon
+                firstx, firsty = polygon.points[polygon.vertices[0]]
+                wkt = wkt + f'{firstx} {firsty}))'
+
+                # if there are less than 8 points per square meter; it's not a tree
+                if (group.shape[0] / loads(wkt).area) <= 8:
+                    points.drop(points.groupby('Classification').get_group(name).index)
+                else:
+                # write to df
+                    self.tree_df.loc[len(self.tree_df)] = [int(name), loads(wkt)]
 
     def find_points_in_polygons(self):
         cluster_points = self.raw_points[self.groundmask]
@@ -166,31 +178,31 @@ class Detector_tree:
         # remove noise
         print(f'Removed {np.array([grouped_points.xy_clusterID < 0]).sum()} noise points')
         grouped_points = grouped_points[grouped_points.xy_clusterID >= 0]
-        self.grouped_points = grouped_points.rename(columns={'index_right': 'polygon_id'})
+        self.xy_grouped_points = grouped_points.rename(columns={'index_right': 'polygon_id'})
 
-    def kmean_cluster(self):
+    def kmean_cluster(self, xy_grouped_points):
+        # TODO: see if it is possible to use initial clusterpoints
         labs = np.array([])
         n_ids = np.array([])
+        self.kmean_grouped_points = xy_grouped_points.copy()
 
-        for name, group in self.grouped_points.groupby('xy_clusterID'):
-            print(name)
+        for name, group in self.kmean_grouped_points.groupby('xy_clusterID'):
             tree_area = float(self.tree_df.loc[self.tree_df['xy_clusterID'] == int(name)].geometry.area)
             if name >= 0 and tree_area >= 2:
-                # TODO there are between (area / 200) and (area / 40) clusters per polygon
-                krange_min = max(1, round(tree_area / 200))
-                krange_max = max(1, round(tree_area / 40))
-                print(f'area of group {int(name)} is: {tree_area}')
-                print(f'there are {group.shape[0]} points in group {name}')
-
                 cluster_data = np.array([group.X,
                                          group.Y,
                                          group.Z]).T
 
-                print(f'the range is {len(range(krange_min, krange_max))}')
-                n_clusters = self.find_n_clusters(cluster_data, krange_min, krange_max)
-                print(f'trying {n_clusters} clusters')
+                n_clusters = self.find_n_clusters_peaks(cluster_data,
+                                                        tree_area,
+                                                        min_dist=2,
+                                                        min_height=0,  # min(group.Y) + 1,
+                                                        gridsize=1.5)
+
+                print(f'polygon: {int(name)}  \t area:  {round(tree_area, 2)} \t Found {n_clusters} clusters')
                 kmeans = KMeans(n_clusters=n_clusters).fit(cluster_data)
                 labs = np.append(labs, kmeans.labels_)
+
             else:
                 # TODO figure out a way to find a label not in the kmeans lables
                 labs = np.append(labs, [1] * group.shape[0])
@@ -198,12 +210,18 @@ class Detector_tree:
 
         arr_inds = n_ids.argsort()
         sorted_labs = labs[arr_inds]
-        self.grouped_points['value_clusterID'] = sorted_labs
+        self.kmean_grouped_points['value_clusterID'] = sorted_labs * 10
         combi_ids = ["".join(row) for row in
-                     self.grouped_points[['value_clusterID', 'xy_clusterID']].values.astype(str)]
-        self.grouped_points['Classification'] = pd.factorize(combi_ids)[0]
+                     self.kmean_grouped_points[['value_clusterID', 'xy_clusterID']].values.astype(str)]
+        self.kmean_grouped_points['Classification'] = pd.factorize(combi_ids)[0]
 
-    def find_n_clusters(self, cluster_data, krange_min, krange_max):
+    def find_n_clusters(self, cluster_data, tree_area):
+        # TODO there are between (area / 200) and (area / 40) clusters per polygon
+        krange_min = max(1, round(tree_area / 200))
+        krange_max = max(1, round(tree_area / 40))
+        print(f'# points: {cluster_data.shape[0]} \t '
+              f'Density: {round(cluster_data.shape[0] / tree_area, 2)} pts/m2')
+
         distortions = []
         kmean_range = range(krange_min, krange_max)
         if len(kmean_range) <= 1:
@@ -226,8 +244,44 @@ class Detector_tree:
         else:
             return round(krange_max / krange_min)
 
+    def find_n_clusters_peaks(self, cluster_data, tree_area, gridsize, min_dist, min_height):
+
+        # round the data
+        d_round = np.empty([cluster_data.shape[0], 5])
+
+        d_round[:, 0] = cluster_data[:, 0]
+        d_round[:, 1] = cluster_data[:, 1]
+        d_round[:, 2] = cluster_data[:, 2]
+        d_round[:, 3] = round_to_val(d_round[:, 0], gridsize)
+        d_round[:, 4] = round_to_val(d_round[:, 1], gridsize)
+
+        df = pd.DataFrame(d_round, columns=['x', 'y', 'z', 'x_round', 'y_round'])
+        df_round = df[['x_round', 'y_round', 'z']]
+        binned_data = df_round.groupby(['x_round', 'y_round'], as_index=False).count()
+
+        minx, maxx = min(df.x), max(df.x)
+        miny, maxy = min(df.y), max(df.y)
+
+        # binned_data = np.loadtxt('your_binned_data.csv', skiprows=1, delimiter=',')
+        x_bins = binned_data.x_round
+        y_bins = binned_data.y_round
+        z_vals = binned_data.z
+
+        pts = np.array([x_bins, y_bins])
+        pts = pts.T
+
+        grid_x, grid_y = np.mgrid[minx:maxx:gridsize, miny:maxy:gridsize]
+
+        # interpolate onto grid
+        data_grid = griddata(pts, z_vals, (grid_x, grid_y), method='cubic')
+        data_grid = np.nan_to_num(data_grid, 0)
+        coordinates = peak_local_max(data_grid, min_distance=min_dist, threshold_abs= min_height )
+        n_cluster = coordinates.shape[0]
+
+        return max(1, n_cluster)
+
     def df_to_PG(self,
-                 geodataframe,
+                 input_gdf,
                  schema,
                  table_name,
                  database='VU',
@@ -236,6 +290,7 @@ class Detector_tree:
                  username='arnot',
                  password=''):
 
+        geodataframe = input_gdf.copy()
         engine = create_engine(f'postgresql://{username}@{host}:{port}/{database}')
         geodataframe['geom'] = geodataframe['geometry'].apply(lambda x: WKTElement(x.wkt, srid=28992))
         geodataframe.drop('geometry', 1, inplace=True)
@@ -247,4 +302,3 @@ class Detector_tree:
                             index=False,
                             schema=schema,
                             dtype={'geom': Geometry('Polygon', srid=28992)})
-
