@@ -286,17 +286,21 @@ class DetectorTree:
 
     def find_n_clusters_peaks(self, cluster_data, tree_area, gridsize, min_dist, min_height):
 
+
         # round the data
         d_round = np.empty([cluster_data.shape[0], 5])
 
-        d_round[:, 0] = cluster_data[:, 0]
-        d_round[:, 1] = cluster_data[:, 1]
-        d_round[:, 2] = cluster_data[:, 2]
-        d_round[:, 3] = round_to_val(d_round[:, 0], gridsize)
-        d_round[:, 4] = round_to_val(d_round[:, 1], gridsize)
+        d_round[:, 0] = cluster_data[:, 0]  # x
+        d_round[:, 1] = cluster_data[:, 1]  # y
+        d_round[:, 2] = cluster_data[:, 2]  # z
+        d_round[:, 3] = round_to_val(d_round[:, 0], gridsize)  # x_round
+        d_round[:, 4] = round_to_val(d_round[:, 1], gridsize)  # y_round
 
         df = pd.DataFrame(d_round, columns=['x', 'y', 'z', 'x_round', 'y_round'])
         df_round = df[['x_round', 'y_round', 'z']]
+        # TODO: min ipv max
+        # print(min ipv max)
+        # binned_data = df_round.groupby(['x_round', 'y_round'], as_index=False).min()
         binned_data = df_round.groupby(['x_round', 'y_round'], as_index=False).count()
 
         minx, maxx = min(df.x), max(df.x)
@@ -307,15 +311,21 @@ class DetectorTree:
         y_bins = binned_data.y_round
         z_vals = binned_data.z
 
-        pts = np.array([x_bins, y_bins])
+        pts = np.array([df.x, df.y])
         pts = pts.T
 
         grid_x, grid_y = np.mgrid[minx:maxx:gridsize, miny:maxy:gridsize]
 
+        if len(np.unique(grid_x)) == 1:
+            grid_x = np.append(grid_x, grid_x[0] + gridsize)
+
+        if len(np.unique(grid_y)) == 1:
+            grid_x = np.append(grid_y, grid_y[0] + gridsize)
+
         # interpolate onto grid
-        data_grid = griddata(pts, z_vals, (grid_x, grid_y), method='cubic')
-        data_grid = np.nan_to_num(data_grid, 0)
-        coordinates = peak_local_max(data_grid, min_distance=min_dist, threshold_abs= min_height )
+        data_grid = griddata(pts, df.z, (grid_x, grid_y), method='cubic', fill_value=0)
+
+        coordinates = peak_local_max(data_grid, min_distance=min_dist, threshold_abs=min_height)
         n_cluster = coordinates.shape[0]
 
         return max(1, n_cluster)
