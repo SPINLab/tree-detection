@@ -22,7 +22,7 @@ from skimage.feature import peak_local_max
 from object_detection.helper_functions import round_to_val
 
 
-class Detector_tree:
+class DetectorTree:
     '''
 
     '''
@@ -30,18 +30,30 @@ class Detector_tree:
     def __init__(self, box):
         self.box = box
         self.xmin, self.ymin, self.xmax, self.ymax = box
-        self.wkt_box = geometry.box(self.xmin, self.ymin, self.xmax, self.ymax).wkt
+        self.geom_box = geometry.box(self.xmin, self.ymin, self.xmax, self.ymax)
+        self.wkt_box = self.geom_box.wkt
         start = time.time()
         self.raw_points = self.ept_reader(self.wkt_box)
         end = time.time()
-        print(f'reading from the ept took {round(end - start,2)}')
+        print(f'reading from the ept took {round(end - start, 2)}')
         print(f'Total amount of points read: {self.raw_points.shape[0]}')
         self.tree_df = GeoDataFrame({'xy_clusterID': [],
                                      'geometry': []})
 
         # Masks
         self.groundmask = self.raw_points['Classification'] != 2
-        self.n_returnsmask = self.raw_points['NumberOfReturns'] >= 3
+        self.n_returnsmask = self.raw_points['NumberOfReturns'] >= 2
+        # self.coplanar_mask = self.raw_points['Coplanar'] != 1
+        self.linearity_mask = np.logical_and(self.raw_points['Linearity'] <= 0.4,
+                                             self.raw_points['Planarity'] <= 0.4)
+
+        masks = np.vstack([self.groundmask, self.n_returnsmask, self.linearity_mask]) # self.coplanar_mask,
+        self.masks = np.sum(masks, axis=0) > 0
+
+
+        self.df_to_PG(GeoDataFrame(
+            data={'what': 'boundingbox', 'geometry': self.geom_box}, index=[0])
+                      , schema='bomen', table_name='bbox')
 
     def ept_reader(self, polygon_wkt: str) -> np.ndarray:
         """
@@ -73,7 +85,22 @@ class Detector_tree:
                     "polygon": polygon_wkt
                 },
                 {
+                    "type": "filters.approximatecoplanar",
+                    "knn": 8,
+                    "thresh1": 25,
+                    "thresh2": 6
+                },
+                {
+                    "type": "filters.covariancefeatures",
+                    "knn": 8,
+                    "threads": 6,
+                    "feature_set": "Dimensionality"
+                },
+                {
                     "type": "filters.smrf"
+                },
+                {
+                    "type": "filters.hag"
                 }
             ]
         }
@@ -97,7 +124,9 @@ class Detector_tree:
         f_pts = pd.DataFrame(points)
 
         f_pts['pid'] = f_pts.index
-        columns_to_keep = [column for column in f_pts.columns if column not in ['pid', 'X', 'Y', 'Z']]
+        columns_to_keep = [column
+                           for column in f_pts.columns
+                           if column not in ['pid', 'X', 'Y', 'Z', 'Red', 'Green', 'Blue']]
         scaler = StandardScaler()
         scaler.fit(f_pts[columns_to_keep])
 
@@ -108,20 +137,29 @@ class Detector_tree:
         return normalized_pointcloud
 
     def cluster_on_xy(self, min_cluster_size, min_samples):
-        masked_points = self.raw_points[np.logical_and(self.groundmask, self.n_returnsmask)]
+
+        masked_points = self.raw_points[self.masks]
+
         start = time.time()
         xy = np.array([masked_points['X'], masked_points['Y']]).T
 
         xy_clusterer = HDBSCAN(min_cluster_size=min_cluster_size,
                                min_samples=min_samples)
         xy_clusterer.fit(xy)
+
         self.clustered_points = pd.DataFrame({'X': masked_points['X'],
                                               'Y': masked_points['Y'],
                                               'Z': masked_points['Z'],
                                               'Red': masked_points['Red'],
                                               'Green': masked_points['Green'],
                                               'Blue': masked_points['Blue'],
+                                              'HAG': masked_points['HeightAboveGround'],
+                                              'Linearity': masked_points['Linearity'],
+                                              'Planarity': masked_points['Planarity'],
+                                              'Scattering': masked_points['Scattering'],
+                                              'Verticality': masked_points['Verticality'],
                                               'Classification': xy_clusterer.labels_})
+
         self.clustered_points = self.clustered_points[self.clustered_points.Classification >= 0]
         end = time.time()
         print(f'clustering on xy took {round(end - start, 2)} seconds')
@@ -134,6 +172,8 @@ class Detector_tree:
 
         for name, group in points.groupby('Classification'):
             if group.shape[0] <= 3:
+                # remove polygons that contain too little points to hullify around
+
                 points.drop(points.groupby('Classification').get_group(name).index)
             else:
                 coords = np.array([group.X, group.Y]).T
@@ -149,13 +189,13 @@ class Detector_tree:
                 wkt = wkt + f'{firstx} {firsty}))'
 
                 # if there are less than 8 points per square meter; it's not a tree
-                if (group.shape[0] / loads(wkt).area) <= 8:
+                if (group.shape[0] / loads(wkt).area) <= 5:
                     points.drop(points.groupby('Classification').get_group(name).index)
                 else:
-                # write to df
+                    # write to df
                     self.tree_df.loc[len(self.tree_df)] = [int(name), loads(wkt)]
 
-    def find_points_in_polygons(self):
+    def find_points_in_polygons(self, polygon_df):
         cluster_points = self.raw_points[self.groundmask]
         xy = [Point(coords) for coords in zip(cluster_points['X'], cluster_points['Y'], cluster_points['Z'])]
 
@@ -166,7 +206,7 @@ class Detector_tree:
         )
 
         points_df = GeoDataFrame(cluster_data, geometry=xy)
-        grouped_points = sjoin(points_df, self.tree_df, how='left')
+        grouped_points = sjoin(points_df, polygon_df, how='left')
         grouped_points['X'] = grouped_points.geometry.apply(lambda p: p.x)
         grouped_points['Y'] = grouped_points.geometry.apply(lambda p: p.y)
 
@@ -180,7 +220,7 @@ class Detector_tree:
         grouped_points = grouped_points[grouped_points.xy_clusterID >= 0]
         self.xy_grouped_points = grouped_points.rename(columns={'index_right': 'polygon_id'})
 
-    def kmean_cluster(self, xy_grouped_points):
+    def kmean_cluster(self, xy_grouped_points, min_dist, min_height, gridsize):
         # TODO: see if it is possible to use initial clusterpoints
         labs = np.array([])
         n_ids = np.array([])
@@ -188,16 +228,16 @@ class Detector_tree:
 
         for name, group in self.kmean_grouped_points.groupby('xy_clusterID'):
             tree_area = float(self.tree_df.loc[self.tree_df['xy_clusterID'] == int(name)].geometry.area)
-            if name >= 0 and tree_area >= 2:
+            if name >= 0 and tree_area >= 2 and group.shape[0] >= 10:
                 cluster_data = np.array([group.X,
                                          group.Y,
                                          group.Z]).T
 
                 n_clusters = self.find_n_clusters_peaks(cluster_data,
                                                         tree_area,
-                                                        min_dist=2,
-                                                        min_height=0,  # min(group.Y) + 1,
-                                                        gridsize=1.5)
+                                                        min_dist=min_dist,  # is rounded to a multiple of the gridsize
+                                                        min_height=min_height,  # min(group.Y) + 1,
+                                                        gridsize=gridsize)
 
                 print(f'polygon: {int(name)}  \t area:  {round(tree_area, 2)} \t Found {n_clusters} clusters')
                 kmeans = KMeans(n_clusters=n_clusters).fit(cluster_data)
