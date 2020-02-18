@@ -41,14 +41,14 @@ class DetectorTree:
                                      'geometry': []})
 
         # Masks
-        self.groundmask = self.raw_points['Classification'] != 2
-        self.n_returnsmask = self.raw_points['NumberOfReturns'] >= 2
-        # self.coplanar_mask = self.raw_points['Coplanar'] != 1
-        self.linearity_mask = np.logical_and(self.raw_points['Linearity'] <= 0.4,
-                                             self.raw_points['Planarity'] <= 0.4)
+        self.groundmask = self.raw_points['Classification'] == 2
+        self.n_returnsmask = self.raw_points['NumberOfReturns'] < 2
+        self.coplanar_mask = self.raw_points['Coplanar'] == 1
+        self.linearity_mask = np.logical_or(self.raw_points['Linearity'] > 0.4,
+                                             self.raw_points['Planarity'] > 0.4)
 
-        masks = np.vstack([self.groundmask, self.n_returnsmask, self.linearity_mask]) # self.coplanar_mask,
-        self.masks = np.sum(masks, axis=0) > 0
+        masks = np.vstack([self.groundmask, self.n_returnsmask, self.linearity_mask])  #
+        self.masks = np.sum(masks, axis=0) == 0
 
 
         self.df_to_PG(GeoDataFrame(
@@ -286,8 +286,6 @@ class DetectorTree:
 
     def find_n_clusters_peaks(self, cluster_data, tree_area, gridsize, min_dist, min_height):
 
-
-        # round the data
         d_round = np.empty([cluster_data.shape[0], 5])
 
         d_round[:, 0] = cluster_data[:, 0]  # x
@@ -298,36 +296,19 @@ class DetectorTree:
 
         df = pd.DataFrame(d_round, columns=['x', 'y', 'z', 'x_round', 'y_round'])
         df_round = df[['x_round', 'y_round', 'z']]
-        # TODO: min ipv max
-        # print(min ipv max)
-        # binned_data = df_round.groupby(['x_round', 'y_round'], as_index=False).min()
+
         binned_data = df_round.groupby(['x_round', 'y_round'], as_index=False).count()
+        x_arr = binned_data.x_round - min(binned_data.x_round)
+        y_arr = binned_data.y_round - min(binned_data.y_round)
 
-        minx, maxx = min(df.x), max(df.x)
-        miny, maxy = min(df.y), max(df.y)
+        img = np.zeros([int(max(y_arr)) + 1, int(max(x_arr)) + 1])
 
-        # binned_data = np.loadtxt('your_binned_data.csv', skiprows=1, delimiter=',')
-        x_bins = binned_data.x_round
-        y_bins = binned_data.y_round
-        z_vals = binned_data.z
+        img[y_arr.astype(np.int).values, x_arr.astype(np.int).values] = binned_data.z
 
-        pts = np.array([df.x, df.y])
-        pts = pts.T
-
-        grid_x, grid_y = np.mgrid[minx:maxx:gridsize, miny:maxy:gridsize]
-
-        if len(np.unique(grid_x)) == 1:
-            grid_x = np.append(grid_x, grid_x[0] + gridsize)
-
-        if len(np.unique(grid_y)) == 1:
-            grid_x = np.append(grid_y, grid_y[0] + gridsize)
-
-        # interpolate onto grid
-        data_grid = griddata(pts, df.z, (grid_x, grid_y), method='cubic', fill_value=0)
-
-        coordinates = peak_local_max(data_grid, min_distance=min_dist, threshold_abs=min_height)
+        coordinates = peak_local_max(img, min_distance=min_dist, threshold_abs=min_height)
         n_cluster = coordinates.shape[0]
 
+        #TODO
         return max(1, n_cluster)
 
     def df_to_PG(self,
