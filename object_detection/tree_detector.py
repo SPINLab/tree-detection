@@ -196,14 +196,13 @@ class DetectorTree:
                     self.tree_df.loc[len(self.tree_df)] = [int(name), loads(wkt)]
 
     def find_points_in_polygons(self, polygon_df):
-        cluster_points = self.raw_points[self.groundmask]
+        cluster_points = self.raw_points[self.groundmask.__invert__()]
         xy = [Point(coords) for coords in zip(cluster_points['X'], cluster_points['Y'], cluster_points['Z'])]
 
         cluster_data = self.preprocess(
             cluster_points[['X', 'Y', 'Z',
                             'Red', 'Green', 'Blue',
-                            'Intensity', 'ReturnNumber', 'NumberOfReturns']]
-        )
+                            'Intensity', 'ReturnNumber', 'NumberOfReturns']])
 
         points_df = GeoDataFrame(cluster_data, geometry=xy)
         grouped_points = sjoin(points_df, polygon_df, how='left')
