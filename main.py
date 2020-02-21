@@ -9,13 +9,13 @@ from object_detection.tree_detector import DetectorTree
 # box = 122577.4,483763.5 ,122720.1,483854.5
 
 # stukje met daken
-# box = 121970.5, 483782.7, 122107.5, 483871.9
+box = 121970.5, 483782.7, 122107.5, 483871.9
 
 # heel groot stuk met daken!
 # box = 121898.8, 483741.2, 122172.7, 483919.5
 
 # heel klein stukje
-box = 122544, 490380, 122553, 490386
+# box = 122544, 490380, 122553, 490386
 
 # stammen
 # box =122287.4, 483709.0, 122398.8, 483781.5
@@ -33,9 +33,10 @@ df_to_pg(tree.tree_df, schema='bomen', table_name='xy_bomen')
 # df_to_pg(tree.tree_coords, schema='bomen', table_name='stammen')
 
 tree.find_points_in_polygons(tree.tree_df)
+
 tree.kmean_cluster(tree.xy_grouped_points, min_dist=5, min_height=0, gridsize=3)
-# tree.convex_hullify(tree.kmean_grouped_points)
-# df_to_pg(tree.tree_df, schema='bomen', table_name='km_bomen')
+tree.convex_hullify(tree.kmean_grouped_points)
+df_to_pg(tree.tree_df, schema='bomen', table_name='km_bomen')
 #
 # write_df = tree.kmean_grouped_points[['pid', 'X', 'Y', 'Z', 'Red', 'Green', 'Blue']]
 # dataframe_to_laz(write_df, 'tst_fn.laz')

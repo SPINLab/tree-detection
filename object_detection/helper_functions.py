@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pdal
 from geoalchemy2 import WKTElement, Geometry
@@ -36,11 +38,15 @@ def write_to_laz(structured_array, path):
         WRITE_PIPELINE.format(path=path),
         arrays=[structured_array]
     )
+
     pipeline.validate()
     pipeline.execute()
 
 
-def dataframe_to_laz(dataframe, laz_fn):
+def dataframe_to_laz(dataframe, laz_fn, overwrite=True):
+    if os.path.exists(laz_fn) and overwrite:
+        os.remove(laz_fn)
+
     result = dataframe.to_records()
     write_to_laz(result, laz_fn)
 
@@ -109,17 +115,24 @@ def df_to_pg(input_gdf,
 
 def preprocess(points):
     f_pts = pd.DataFrame(points)
-
     f_pts['pid'] = f_pts.index
+    return f_pts
+
     columns_to_keep = [column
                        for column in f_pts.columns
-                       if column not in ['pid', 'X', 'Y', 'Z', 'Red', 'Green', 'Blue']]
+                       if column not in ['pid',
+                                         'X', 'Y', 'Z',
+                                         'Red', 'Green', 'Blue',
+                                         'Intensity', 'ReturnNumber', 'NumberOfReturns',
+                                         'HeightAboveGround'
+                                         ]]
     scaler = StandardScaler()
     scaler.fit(f_pts[columns_to_keep])
     f_pts[columns_to_keep] = scaler.transform(f_pts[columns_to_keep])
     normalized_pointcloud = pd.DataFrame(data=f_pts,
                                          columns=f_pts.columns)
     return normalized_pointcloud
+
 
 def add_vectors(vec):
     a, b = vec

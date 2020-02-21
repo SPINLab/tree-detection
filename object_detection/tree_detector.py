@@ -199,6 +199,7 @@ class DetectorTree:
         cluster_points = self.raw_points[self.ground_mask.__invert__()]
         xy = [Point(coords) for coords in zip(cluster_points['X'], cluster_points['Y'], cluster_points['Z'])]
 
+        # do i need to pre-process?
         cluster_data = preprocess(
             cluster_points[['X', 'Y', 'Z',
                             'Red', 'Green', 'Blue',
@@ -222,40 +223,69 @@ class DetectorTree:
 
     def kmean_cluster(self, xy_grouped_points, min_dist, min_height, gridsize):
         # TODO: see if it is possible to use initial clusterpoints
-        labs = np.array([])
-        n_ids = np.array([])
+        labs = pd.DataFrame(data={'labs': [0] * len(xy_grouped_points.pid),
+                                  'pid': xy_grouped_points.pid},
+                            index=xy_grouped_points.pid)
+        labs.drop_duplicates(subset=['pid'], keep='first', inplace=True)
+        print(labs.index.is_unique)
+
+        # labs = np.array([])
+        # n_ids = np.array([])
         self.kmean_grouped_points = xy_grouped_points.copy()
 
         for name, group in self.kmean_grouped_points.groupby('xy_clusterID'):
             tree_area = float(self.tree_df.loc[self.tree_df['xy_clusterID'] == int(name)].geometry.area)
-            if True: # name >= 0 and tree_area >= 2 and group.shape[0] >= 10:
-                n_group = self.second_filter(group)
-                kmeans_labels = self.kmean_cluster_group(n_group, min_dist, min_height, gridsize)
-                labs = np.append(labs, kmeans_labels)
+            try:
+                del new_labs
+            except Exception:
+                pass
 
-                print(f'polygon: {int(name)}  \t area:  {round(tree_area, 2)} \t '
-                      f'Found {len(np.unique(kmeans_labels))} clusters')
+            if name >= 0 and tree_area >= 2 and group.shape[0] >= 10:
+                group = group.drop(['geometry'], axis=1)
+                to_cluster = self.second_filter(group.to_records())
+                kmeans_labels = self.kmean_cluster_group(to_cluster, min_dist, min_height, gridsize)
+                new_labs = pd.DataFrame(data={'labs': kmeans_labels,
+                                              'pid': to_cluster.pid},
+                                        index=to_cluster.pid)
+                new_labs.drop_duplicates(subset=['pid'], keep='first', inplace=True)
+
+
+                try:
+                    labs.update(new_labs)
+                except ValueError as e:
+                    print(f'Fatal: {e}')
+                    raise
+
+                # labs = np.append(labs, kmeans_labels)
+                print(
+                    f"polygon: {int(name)}  \t "
+                    f"area:  {round(tree_area, 2)} \t "
+                    f"Found {len(np.unique(kmeans_labels))} clusters"
+                )
 
             else:
                 # TODO figure out a way to find a label not in the kmeans lables
-                labs = np.append(labs, [1] * group.shape[0])
-            n_ids = np.append(n_ids, group.pid)
-
-        arr_inds = n_ids.argsort()
-        sorted_labs = labs[arr_inds]
-        self.kmean_grouped_points['value_clusterID'] = sorted_labs * 10 # to make the combination of 1 and 1, 10 and 1
+                new_labs = pd.DataFrame(data={'labs': [1] * len(group.pid),
+                                              'pid': to_cluster.pid},
+                                        index=group.pid)
+                new_labs.drop_duplicates(subset=['pid'], keep='first', inplace=True)
+                labs.update(new_labs)
+        # array_index = labs.pid.argsort()
+        # sorted_labs = labs.labs[array_index]
+        self.kmean_grouped_points['value_clusterID'] = labs.labs * 10
         combi_ids = ["".join(row) for row in
                      self.kmean_grouped_points[['value_clusterID', 'xy_clusterID']].values.astype(str)]
         self.kmean_grouped_points['Classification'] = pd.factorize(combi_ids)[0]
 
     def kmean_cluster_group(self, group, min_dist, min_height, gridsize):
-        cluster_data = np.array([group['X'],
-                                 group['Y'],
-                                 group['Z']]).T
+        cluster_data = np.array([group.X,
+                                 group.Y,
+                                 group.Z]).T
 
         n_clusters, coordinates = find_n_clusters_peaks(cluster_data,
                                                         min_dist=min_dist,
-                                                        min_height=min_height,
+                                                        # is rounded to a multiple of the gridsize
+                                                        min_height=min_height,  # min(group.Y) + 1,
                                                         grid_size=gridsize)
 
         kmeans = KMeans(n_clusters=n_clusters).fit(cluster_data)
@@ -285,25 +315,21 @@ class DetectorTree:
     #         self.tree_coords = GeoDataFrame(
     #             tree_coords, geometry=gpd.points_from_xy(tree_coords.X, tree_coords.Y))
 
-    def second_filter(self, group):
+    def second_filter(self, points):
         pipeline_config = {
             "pipeline": [
-                {
-                    "type": "readers.las",
-                    "filename": "tmp.laz"
-                },
                 {
                     "type": "filters.smrf"
                 },
                 {
                     "type": "filters.hag"
                 },
-                {
-                    "type": "filters.outlier",
-                    "method": "statistical",
-                    "mean_k": 12,
-                    "multiplier": 2.2
-                },
+                # {
+                #     "type": "filters.outlier",
+                #     "method": "statistical",
+                #     "mean_k": 12,
+                #     "multiplier": 2.2
+                # },
                 {
                     "type": "filters.range",
                     "limits": "HeightAboveGround[0.5:), Classification![7:7]"
@@ -313,19 +339,20 @@ class DetectorTree:
         }
 
         # group = group[group.HeightAboveGround <= 2]
-        group = group[['X', 'Y', 'Z']]
-        dataframe_to_laz(group, 'tmp.laz')
-
+        # group = group[['X', 'Y', 'Z', 'pid', 'xy_clusterID', 'Red', 'Green', 'Blue', 'polygon_id']]
+        print(points.shape)
         try:
-            p = pdal.Pipeline(json=json.dumps(pipeline_config))
+            p = pdal.Pipeline(json.dumps(pipeline_config), arrays=[points])
             p.validate()  # check if our JSON and options were good
             p.execute()
+            arrays = p.arrays
+            out_points = arrays[0]
 
         except Exception as e:
             trace = traceback.format_exc()
             print("Unexpected error:", trace)
-            raise
 
-        arrays = p.arrays
-        points = arrays[0]
-        return points
+            out_points = points.copy()
+
+
+        return pd.DataFrame(out_points)
