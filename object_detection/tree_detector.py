@@ -2,26 +2,21 @@ import json
 import traceback
 import time
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pdal
-from geoalchemy2 import WKTElement, Geometry
 from geopandas import GeoDataFrame, sjoin
-from kneed import KneeLocator
-from scipy.interpolate import griddata
-from scipy.spatial.distance import cdist
 from scipy.spatial.qhull import ConvexHull
 from shapely import geometry
 from shapely.geometry import Point
 from shapely.wkt import loads
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
 from hdbscan import HDBSCAN
-from sqlalchemy import create_engine
-from skimage.feature import peak_local_max
-from object_detection.helper_functions import round_to_val
+from object_detection.helper_functions import find_n_clusters_peaks, df_to_pg, preprocess, dataframe_to_laz
 
 
+# noinspection PyAttributeOutsideInit
 class DetectorTree:
     '''
 
@@ -41,19 +36,27 @@ class DetectorTree:
                                      'geometry': []})
 
         # Masks
-        self.groundmask = self.raw_points['Classification'] == 2
-        self.n_returnsmask = self.raw_points['NumberOfReturns'] < 2
+        self.ground_mask = self.raw_points['Classification'] == 2
+        self.n_returns_mask = self.raw_points['NumberOfReturns'] < 2
         self.coplanar_mask = self.raw_points['Coplanar'] == 1
-        self.linearity_mask = np.logical_or(self.raw_points['Linearity'] > 0.4,
-                                             self.raw_points['Planarity'] > 0.4)
+        self.linearity_mask = np.logical_or(self.raw_points['Planarity'] > 0.4,
+                                            self.raw_points['Linearity'] > 0.4)
+        # self.planarity_mask = self.raw_points['Planarity'] > 0.4
+        self.radialdensity_mask = self.raw_points['RadialDensity'] < 0
 
-        masks = np.vstack([self.groundmask, self.n_returnsmask, self.linearity_mask])  #
+        self.tree_coords = pd.DataFrame(data={'X': [],
+                                              'Y': []})
+
+        # masks = np.vstack([self.ground_mask, self.n_returns_mask, self.linearity_mask, self.coplanar_mask])  #
+        masks = np.vstack([self.ground_mask, self.n_returns_mask, self.radialdensity_mask, self.linearity_mask])
         self.masks = np.sum(masks, axis=0) == 0
 
-
-        self.df_to_PG(GeoDataFrame(
-            data={'what': 'boundingbox', 'geometry': self.geom_box}, index=[0])
-                      , schema='bomen', table_name='bbox')
+        df_to_pg(GeoDataFrame(
+            data={'what': 'boundingbox',
+                  'geometry': self.geom_box},
+            index=[0]),
+            schema='bomen',
+            table_name='bbox')
 
     def ept_reader(self, polygon_wkt: str) -> np.ndarray:
         """
@@ -97,10 +100,23 @@ class DetectorTree:
                     "feature_set": "Dimensionality"
                 },
                 {
-                    "type": "filters.smrf"
+                    "type": "filters.outlier"
+                },
+                {
+                    "type": "filters.smrf",
+                    "returns": "last,only",
+                    "slope": 0.2,
+                    "window": 18,
+                    "threshold": 0.45,
+                    "scalar": 1.2,
+                    "ignore": "Classification[7:7]",
                 },
                 {
                     "type": "filters.hag"
+                },
+                {
+                    "type": "filters.radialdensity",
+                    "radius": 2.0
                 }
             ]
         }
@@ -119,22 +135,6 @@ class DetectorTree:
         arrays = pipeline.arrays
         points = arrays[0]
         return points
-
-    def preprocess(self, points):
-        f_pts = pd.DataFrame(points)
-
-        f_pts['pid'] = f_pts.index
-        columns_to_keep = [column
-                           for column in f_pts.columns
-                           if column not in ['pid', 'X', 'Y', 'Z', 'Red', 'Green', 'Blue']]
-        scaler = StandardScaler()
-        scaler.fit(f_pts[columns_to_keep])
-
-        f_pts[columns_to_keep] = scaler.transform(f_pts[columns_to_keep])
-
-        normalized_pointcloud = pd.DataFrame(f_pts,
-                                             columns=f_pts.columns)
-        return normalized_pointcloud
 
     def cluster_on_xy(self, min_cluster_size, min_samples):
 
@@ -159,9 +159,10 @@ class DetectorTree:
                                               'Scattering': masked_points['Scattering'],
                                               'Verticality': masked_points['Verticality'],
                                               'Classification': xy_clusterer.labels_})
-
+        # remove "noise" points
         self.clustered_points = self.clustered_points[self.clustered_points.Classification >= 0]
         end = time.time()
+        print(f'found {np.unique(len(np.unique(self.clustered_points.Classification)))[0]} xy_clusters')
         print(f'clustering on xy took {round(end - start, 2)} seconds')
 
     def convex_hullify(self, points):
@@ -173,7 +174,6 @@ class DetectorTree:
         for name, group in points.groupby('Classification'):
             if group.shape[0] <= 3:
                 # remove polygons that contain too little points to hullify around
-
                 points.drop(points.groupby('Classification').get_group(name).index)
             else:
                 coords = np.array([group.X, group.Y]).T
@@ -196,13 +196,14 @@ class DetectorTree:
                     self.tree_df.loc[len(self.tree_df)] = [int(name), loads(wkt)]
 
     def find_points_in_polygons(self, polygon_df):
-        cluster_points = self.raw_points[self.groundmask.__invert__()]
+        cluster_points = self.raw_points[self.ground_mask.__invert__()]
         xy = [Point(coords) for coords in zip(cluster_points['X'], cluster_points['Y'], cluster_points['Z'])]
 
-        cluster_data = self.preprocess(
+        cluster_data = preprocess(
             cluster_points[['X', 'Y', 'Z',
                             'Red', 'Green', 'Blue',
-                            'Intensity', 'ReturnNumber', 'NumberOfReturns']])
+                            'Intensity', 'ReturnNumber', 'NumberOfReturns',
+                            'HeightAboveGround']])
 
         points_df = GeoDataFrame(cluster_data, geometry=xy)
         grouped_points = sjoin(points_df, polygon_df, how='left')
@@ -228,19 +229,9 @@ class DetectorTree:
         for name, group in self.kmean_grouped_points.groupby('xy_clusterID'):
             tree_area = float(self.tree_df.loc[self.tree_df['xy_clusterID'] == int(name)].geometry.area)
             if name >= 0 and tree_area >= 2 and group.shape[0] >= 10:
-                cluster_data = np.array([group.X,
-                                         group.Y,
-                                         group.Z]).T
-
-                n_clusters = self.find_n_clusters_peaks(cluster_data,
-                                                        tree_area,
-                                                        min_dist=min_dist,  # is rounded to a multiple of the gridsize
-                                                        min_height=min_height,  # min(group.Y) + 1,
-                                                        gridsize=gridsize)
-
-                print(f'polygon: {int(name)}  \t area:  {round(tree_area, 2)} \t Found {n_clusters} clusters')
-                kmeans = KMeans(n_clusters=n_clusters).fit(cluster_data)
-                labs = np.append(labs, kmeans.labels_)
+                kmeans_labels = self.kmean_cluster_group(group, min_dist, min_height, gridsize)
+                labs = np.append(labs, kmeans_labels)
+                print(f'polygon: {int(name)}  \t area:  {round(tree_area, 2)} \t Found {len(np.unique(kmeans_labels))} clusters')
 
             else:
                 # TODO figure out a way to find a label not in the kmeans lables
@@ -254,81 +245,86 @@ class DetectorTree:
                      self.kmean_grouped_points[['value_clusterID', 'xy_clusterID']].values.astype(str)]
         self.kmean_grouped_points['Classification'] = pd.factorize(combi_ids)[0]
 
-    def find_n_clusters(self, cluster_data, tree_area):
-        # TODO there are between (area / 200) and (area / 40) clusters per polygon
-        krange_min = max(1, round(tree_area / 200))
-        krange_max = max(1, round(tree_area / 40))
-        print(f'# points: {cluster_data.shape[0]} \t '
-              f'Density: {round(cluster_data.shape[0] / tree_area, 2)} pts/m2')
+    def kmean_cluster_group(self, group, min_dist, min_height, gridsize):
+        cluster_data = np.array([group.X,
+                                 group.Y,
+                                 group.Z]).T
 
-        distortions = []
-        kmean_range = range(krange_min, krange_max)
-        if len(kmean_range) <= 1:
-            return krange_min
+        n_clusters, coordinates = find_n_clusters_peaks(cluster_data,
+                                                        min_dist=min_dist,
+                                                        # is rounded to a multiple of the gridsize
+                                                        min_height=min_height,  # min(group.Y) + 1,
+                                                        grid_size=gridsize)
 
-        for k in kmean_range:
-            kmeans = KMeans(n_clusters=k).fit(cluster_data)
-            distortions.append(
-                sum(np.min(cdist(cluster_data, kmeans.cluster_centers_, 'euclidean'), axis=1)) /
-                cluster_data.shape[0])
-        print(distortions)
-        knee = KneeLocator(x=range(1, len(distortions) + 1),
-                           y=distortions,
-                           curve='convex',
-                           direction='decreasing')
+        kmeans = KMeans(n_clusters=n_clusters).fit(cluster_data)
 
-        # TODO: handle this better
-        if knee.knee:
-            return knee.knee
-        else:
-            return round(krange_max / krange_min)
+        return kmeans.labels_
 
-    def find_n_clusters_peaks(self, cluster_data, tree_area, gridsize, min_dist, min_height):
+    # def find_stems(self, points, grid_size, min_dist):
+    #
+    #     # TODO read dataframe with pdal and detect lines
+    #     # stems are lines
+    #     for name, group in points.groupby('xy_clusterID'):
+    #         group = group[group.HeightAboveGround <= 2]
+    #         cluster_data = np.array([group.X,
+    #                                  group.Y,
+    #                                  group.Z * -1]).T
+    #
+    #         stems, coordinates = find_n_clusters_peaks(cluster_data, grid_size, min_dist, 0)  # 0 = min_height
+    #
+    #     coordinates = np.array(coordinates).T
+    #     if coordinates.shape[0] > 0:
+    #         tmp = pd.DataFrame({'X': coordinates[0],
+    #                             'Y': coordinates[1]})
+    #
+    #         print(tmp)
+    #         tree_coords = self.tree_coords.copy()
+    #         tree_coords = tree_coords.append(tmp, ignore_index=True)
+    #         self.tree_coords = GeoDataFrame(
+    #             tree_coords, geometry=gpd.points_from_xy(tree_coords.X, tree_coords.Y))
 
-        d_round = np.empty([cluster_data.shape[0], 5])
+    def find_stems(self, points):
+        pipeline_config = {
+            "pipeline": [
+                {
+                    "type": "readers.las",
+                    "filename": "tmp.laz"
+                },
+                {
+                    "type": "filters.smrf"
+                },
+                {
+                    "type": "filters.hag"
+                },
+                {
+                    "type": "filters.outlier",
+                    "method": "statistical",
+                    "mean_k": 12,
+                    "multiplier": 2.2
+                },
+                {
+                    "type": "filters.range",
+                    "limits": "HeightAboveGround[0.5:), Classification![7:7]"
+                }
 
-        d_round[:, 0] = cluster_data[:, 0]  # x
-        d_round[:, 1] = cluster_data[:, 1]  # y
-        d_round[:, 2] = cluster_data[:, 2]  # z
-        d_round[:, 3] = round_to_val(d_round[:, 0], gridsize)  # x_round
-        d_round[:, 4] = round_to_val(d_round[:, 1], gridsize)  # y_round
+            ]
+        }
 
-        df = pd.DataFrame(d_round, columns=['x', 'y', 'z', 'x_round', 'y_round'])
-        df_round = df[['x_round', 'y_round', 'z']]
+        for name, group in points.groupby('xy_clusterID'):
+            # group = group[group.HeightAboveGround <= 2]
+            group = group[['X', 'Y', 'Z', 'pid']]
+            dataframe_to_laz(group, 'tmp.laz')
 
-        binned_data = df_round.groupby(['x_round', 'y_round'], as_index=False).count()
-        x_arr = binned_data.x_round - min(binned_data.x_round)
-        y_arr = binned_data.y_round - min(binned_data.y_round)
+            try:
+                p = pdal.Pipeline(json=json.dumps(pipeline_config))
+                p.validate()  # check if our JSON and options were good
+                p.execute()
 
-        img = np.zeros([int(max(y_arr)) + 1, int(max(x_arr)) + 1])
+            except Exception as e:
+                trace = traceback.format_exc()
+                print("Unexpected error:", trace)
+                raise
 
-        img[y_arr.astype(np.int).values, x_arr.astype(np.int).values] = binned_data.z
-
-        coordinates = peak_local_max(img, min_distance=min_dist, threshold_abs=min_height)
-        n_cluster = coordinates.shape[0]
-
-        #TODO
-        return max(1, n_cluster)
-
-    def df_to_PG(self,
-                 input_gdf,
-                 schema,
-                 table_name,
-                 database='VU',
-                 port='5432',
-                 host='leda.geodan.nl',
-                 username='arnot',
-                 password=''):
-
-        geodataframe = input_gdf.copy()
-        engine = create_engine(f'postgresql://{username}@{host}:{port}/{database}')
-        geodataframe['geom'] = geodataframe['geometry'].apply(lambda x: WKTElement(x.wkt, srid=28992))
-        geodataframe.drop('geometry', 1, inplace=True)
-        print('warning! For now everything in the database is replaced!!!')
-
-        geodataframe.to_sql(table_name,
-                            engine,
-                            if_exists='replace',
-                            index=False,
-                            schema=schema,
-                            dtype={'geom': Geometry('Polygon', srid=28992)})
+            arrays = p.arrays
+            points = arrays[0]
+            return points
