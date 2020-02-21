@@ -228,10 +228,13 @@ class DetectorTree:
 
         for name, group in self.kmean_grouped_points.groupby('xy_clusterID'):
             tree_area = float(self.tree_df.loc[self.tree_df['xy_clusterID'] == int(name)].geometry.area)
-            if name >= 0 and tree_area >= 2 and group.shape[0] >= 10:
-                kmeans_labels = self.kmean_cluster_group(group, min_dist, min_height, gridsize)
+            if True: # name >= 0 and tree_area >= 2 and group.shape[0] >= 10:
+                n_group = self.second_filter(group)
+                kmeans_labels = self.kmean_cluster_group(n_group, min_dist, min_height, gridsize)
                 labs = np.append(labs, kmeans_labels)
-                print(f'polygon: {int(name)}  \t area:  {round(tree_area, 2)} \t Found {len(np.unique(kmeans_labels))} clusters')
+
+                print(f'polygon: {int(name)}  \t area:  {round(tree_area, 2)} \t '
+                      f'Found {len(np.unique(kmeans_labels))} clusters')
 
             else:
                 # TODO figure out a way to find a label not in the kmeans lables
@@ -240,20 +243,19 @@ class DetectorTree:
 
         arr_inds = n_ids.argsort()
         sorted_labs = labs[arr_inds]
-        self.kmean_grouped_points['value_clusterID'] = sorted_labs * 10
+        self.kmean_grouped_points['value_clusterID'] = sorted_labs * 10 # to make the combination of 1 and 1, 10 and 1
         combi_ids = ["".join(row) for row in
                      self.kmean_grouped_points[['value_clusterID', 'xy_clusterID']].values.astype(str)]
         self.kmean_grouped_points['Classification'] = pd.factorize(combi_ids)[0]
 
     def kmean_cluster_group(self, group, min_dist, min_height, gridsize):
-        cluster_data = np.array([group.X,
-                                 group.Y,
-                                 group.Z]).T
+        cluster_data = np.array([group['X'],
+                                 group['Y'],
+                                 group['Z']]).T
 
         n_clusters, coordinates = find_n_clusters_peaks(cluster_data,
                                                         min_dist=min_dist,
-                                                        # is rounded to a multiple of the gridsize
-                                                        min_height=min_height,  # min(group.Y) + 1,
+                                                        min_height=min_height,
                                                         grid_size=gridsize)
 
         kmeans = KMeans(n_clusters=n_clusters).fit(cluster_data)
@@ -283,7 +285,7 @@ class DetectorTree:
     #         self.tree_coords = GeoDataFrame(
     #             tree_coords, geometry=gpd.points_from_xy(tree_coords.X, tree_coords.Y))
 
-    def find_stems(self, points):
+    def second_filter(self, group):
         pipeline_config = {
             "pipeline": [
                 {
@@ -310,21 +312,20 @@ class DetectorTree:
             ]
         }
 
-        for name, group in points.groupby('xy_clusterID'):
-            # group = group[group.HeightAboveGround <= 2]
-            group = group[['X', 'Y', 'Z', 'pid']]
-            dataframe_to_laz(group, 'tmp.laz')
+        # group = group[group.HeightAboveGround <= 2]
+        group = group[['X', 'Y', 'Z']]
+        dataframe_to_laz(group, 'tmp.laz')
 
-            try:
-                p = pdal.Pipeline(json=json.dumps(pipeline_config))
-                p.validate()  # check if our JSON and options were good
-                p.execute()
+        try:
+            p = pdal.Pipeline(json=json.dumps(pipeline_config))
+            p.validate()  # check if our JSON and options were good
+            p.execute()
 
-            except Exception as e:
-                trace = traceback.format_exc()
-                print("Unexpected error:", trace)
-                raise
+        except Exception as e:
+            trace = traceback.format_exc()
+            print("Unexpected error:", trace)
+            raise
 
-            arrays = p.arrays
-            points = arrays[0]
-            return points
+        arrays = p.arrays
+        points = arrays[0]
+        return points

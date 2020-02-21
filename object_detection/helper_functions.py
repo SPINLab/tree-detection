@@ -50,11 +50,8 @@ def round_to_val(a, round_val):
 
 
 def find_n_clusters_peaks(cluster_data, grid_size, min_dist, min_height):
-    points = pd.DataFrame(data={
-        'X': cluster_data[:, 0],
-        'Y': cluster_data[:, 1],
-        'Z': cluster_data[:, 2]
-    })
+    points = pd.DataFrame(data=cluster_data,
+                          columns=['X', 'Y', 'Z'])
 
     img, minx, miny = interpolate_df(points, grid_size)
 
@@ -119,10 +116,8 @@ def preprocess(points):
                        if column not in ['pid', 'X', 'Y', 'Z', 'Red', 'Green', 'Blue']]
     scaler = StandardScaler()
     scaler.fit(f_pts[columns_to_keep])
-
     f_pts[columns_to_keep] = scaler.transform(f_pts[columns_to_keep])
-
-    normalized_pointcloud = pd.DataFrame(f_pts,
+    normalized_pointcloud = pd.DataFrame(data=f_pts,
                                          columns=f_pts.columns)
     return normalized_pointcloud
 
