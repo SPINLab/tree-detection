@@ -90,6 +90,7 @@ def interpolate_df(xyz_points, grid_size):
 
     return img, minx, miny
 
+
 def df_to_pg(input_gdf,
              schema,
              table_name,
@@ -98,19 +99,18 @@ def df_to_pg(input_gdf,
              host='leda.geodan.nl',
              username='arnot',
              password=''):
-
-    geodataframe = input_gdf.copy()
+    geo_dataframe = input_gdf.copy()
     engine = create_engine(f'postgresql://{username}@{host}:{port}/{database}')
-    geodataframe['geom'] = geodataframe['geometry'].apply(lambda x: WKTElement(x.wkt, srid=28992))
-    geodataframe.drop('geometry', 1, inplace=True)
+    geo_dataframe['geom'] = geo_dataframe['geometry'].apply(lambda x: WKTElement(x.wkt, srid=28992))
+    geo_dataframe.drop('geometry', 1, inplace=True)
     print('warning! For now everything in the database is replaced!!!')
 
-    geodataframe.to_sql(table_name,
-                        engine,
-                        if_exists='replace',
-                        index=False,
-                        schema=schema,
-                        dtype={'geom': Geometry(input_gdf.geometry.geom_type[0], srid=28992)})
+    geo_dataframe.to_sql(table_name,
+                         engine,
+                         if_exists='replace',
+                         index=False,
+                         schema=schema,
+                         dtype={'geom': Geometry(input_gdf.geometry.geom_type[0], srid=28992)})
 
 
 def preprocess(points):
@@ -136,4 +136,4 @@ def preprocess(points):
 
 def add_vectors(vec):
     a, b = vec
-    return [a[0] + b[0], a[1]+ b[1]]
+    return [a[0] + b[0], a[1] + b[1]]

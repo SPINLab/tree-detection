@@ -33,22 +33,24 @@ class DetectorTree:
         print(f'reading from the ept took {round(end - start, 2)}')
         print(f'Total amount of points read: {self.raw_points.shape[0]}')
         self.tree_df = GeoDataFrame({'xy_clusterID': [],
-                                     'geometry': []})
+                                     'geometry': [],
+                                     "meanZ": [],
+                                     "n_pts": []})
 
         # Masks
         self.ground_mask = self.raw_points['Classification'] == 2
         self.n_returns_mask = self.raw_points['NumberOfReturns'] < 2
-        self.coplanar_mask = self.raw_points['Coplanar'] == 1
-        self.linearity_mask = np.logical_or(self.raw_points['Planarity'] > 0.4,
-                                            self.raw_points['Linearity'] > 0.4)
-        # self.planarity_mask = self.raw_points['Planarity'] > 0.4
-        self.radialdensity_mask = self.raw_points['RadialDensity'] < 0
+        # self.coplanar_mask = self.raw_points['Coplanar'] == 1
+        # self.linearity_mask = np.logical_or(self.raw_points['Planarity'] > 0.4,
+        #                                     self.raw_points['Linearity'] > 0.4)
+        # # self.planarity_mask = self.raw_points['Planarity'] > 0.4
+        # self.radialdensity_mask = self.raw_points['RadialDensity'] < 0
 
         self.tree_coords = pd.DataFrame(data={'X': [],
                                               'Y': []})
 
         # masks = np.vstack([self.ground_mask, self.n_returns_mask, self.radialdensity_mask, self.linearity_mask])
-        masks = np.vstack([self.ground_mask, self.n_returns_mask, self.radialdensity_mask, self.linearity_mask])
+        masks = np.vstack([self.ground_mask, self.n_returns_mask])
         self.masks = np.sum(masks, axis=0) == 0
 
         df_to_pg(GeoDataFrame(
@@ -73,7 +75,8 @@ class DetectorTree:
         """
         polygon = loads(polygon_wkt)
         bbox = polygon.bounds
-        ept_location: str = 'http://ngi.geodan.nl/maquette/colorized-points/ahn3_nl/ept-subsets/ept.json'
+        # ept_location: str = 'http://ngi.geodan.nl/maquette/colorized-points/ahn3_nl/ept-subsets/ept.json'
+        ept_location: str = 'https://beta.geodan.nl/maquette/colorized-points/ahn3_nl/ept-subsets/ept.json'
         bounds = f"([{bbox[0]},{bbox[2]}],[{bbox[1]},{bbox[3]}])"
 
         pipeline_config = {
@@ -134,7 +137,7 @@ class DetectorTree:
         print(f'found {np.unique(len(np.unique(self.clustered_points.Classification)))[0]} xy_clusters')
         print(f'clustering on xy took {round(end - start, 2)} seconds')
 
-    def convex_hullify(self, points):
+    def convex_hullify(self, points, kmean_pols = False):
         try:
             self.tree_df.drop(self.tree_df.index, inplace=True)
         except:
@@ -142,6 +145,7 @@ class DetectorTree:
 
         for name, group in points.groupby('Classification'):
             if group.shape[0] <= 3:
+                print(name)
                 # remove polygons that contain too little points to hullify around
                 points.drop(points.groupby('Classification').get_group(name).index)
             else:
@@ -158,22 +162,33 @@ class DetectorTree:
                 wkt = wkt + f'{firstx} {firsty}))'
 
                 # if there are less than 8 points per square meter; it's not a tree
-                if (group.shape[0] / loads(wkt).area) <= 5:
+                if (group.shape[0] / loads(wkt).area) <= 3:
+                    print(f'dropped {name} because less than 3 pts/m2')
                     points.drop(points.groupby('Classification').get_group(name).index)
+
+                elif kmean_pols and loads(wkt).area >= 800:
+                    print(points.columns)
+                    print(f'dropped {name} because polygon is too big')
+                    points.drop(points.groupby('Classification').get_group(name).index)
+                # elif points.
+
                 else:
                     # write to df
-                    self.tree_df.loc[len(self.tree_df)] = [int(name), loads(wkt)]
+                    self.tree_df.loc[len(self.tree_df)] = [int(name),
+                                                           loads(wkt),
+                                                           group.Z.mean(),
+                                                           group.shape[0]]
 
     def find_points_in_polygons(self, polygon_df):
-        cluster_points = self.raw_points[self.ground_mask.__invert__()]
+        # cluster_points = self.raw_points[self.ground_mask.__invert__()]
+        cluster_points = self.raw_points.copy()
         xy = [Point(coords) for coords in zip(cluster_points['X'], cluster_points['Y'], cluster_points['Z'])]
 
         # do i need to pre-process?
-        cluster_data = preprocess(
-            cluster_points[['X', 'Y', 'Z',
-                            'Red', 'Green', 'Blue',
-                            'Intensity', 'ReturnNumber', 'NumberOfReturns',
-                            'HeightAboveGround']])
+        cluster_data = preprocess(cluster_points)
+            # cluster_points[['X', 'Y', 'Z',
+            #                 'Red', 'Green', 'Blue',
+            #                 'Intensity', 'ReturnNumber', 'NumberOfReturns']])
 
         points_df = GeoDataFrame(cluster_data, geometry=xy)
         grouped_points = sjoin(points_df, polygon_df, how='left')
@@ -192,11 +207,11 @@ class DetectorTree:
 
     def kmean_cluster(self, xy_grouped_points, min_dist, min_height, gridsize):
         # TODO: see if it is possible to use initial clusterpoints
+        to_cluster = pd.DataFrame(data={'pid': []})
         labs = pd.DataFrame(data={'labs': [0] * len(xy_grouped_points.pid),
                                   'pid': xy_grouped_points.pid},
                             index=xy_grouped_points.pid)
         labs.drop_duplicates(subset=['pid'], keep='first', inplace=True)
-        print(labs.index.is_unique)
 
         # labs = np.array([])
         # n_ids = np.array([])
@@ -213,11 +228,16 @@ class DetectorTree:
                 group = group.drop(['geometry'], axis=1)
                 to_cluster = self.second_filter(group.to_records())
                 kmeans_labels = self.kmean_cluster_group(to_cluster, min_dist, min_height, gridsize)
+
                 new_labs = pd.DataFrame(data={'labs': kmeans_labels,
-                                              'pid': to_cluster.pid},
+                                              'pid': to_cluster.pid,
+                                              'HeightAboveGround': to_cluster.HeightAboveGround,
+                                              'Coplanar': to_cluster.Coplanar,
+                                              'NormalX': to_cluster.NormalX,
+                                              'NormalY': to_cluster.NormalY,
+                                              'NormalZ': to_cluster.NormalZ},
                                         index=to_cluster.pid)
                 new_labs.drop_duplicates(subset=['pid'], keep='first', inplace=True)
-
 
                 try:
                     labs.update(new_labs)
@@ -233,7 +253,6 @@ class DetectorTree:
                 )
 
             else:
-                # TODO figure out a way to find a label not in the kmeans lables
                 new_labs = pd.DataFrame(data={'labs': [1] * len(group.pid),
                                               'pid': to_cluster.pid},
                                         index=group.pid)
@@ -242,6 +261,11 @@ class DetectorTree:
         # array_index = labs.pid.argsort()
         # sorted_labs = labs.labs[array_index]
         self.kmean_grouped_points['value_clusterID'] = labs.labs * 10
+
+        added_cols = ['HeightAboveGround', 'Coplanar', 'NormalX', 'NormalY', 'NormalZ']
+        for col in added_cols:
+            self.kmean_grouped_points[col] = eval(f'labs.{col}')
+
         combi_ids = ["".join(row) for row in
                      self.kmean_grouped_points[['value_clusterID', 'xy_clusterID']].values.astype(str)]
         self.kmean_grouped_points['Classification'] = pd.factorize(combi_ids)[0]
@@ -262,8 +286,8 @@ class DetectorTree:
         return kmeans.labels_
 
     # def find_stems(self, points, grid_size, min_dist):
-    #
-    #     # TODO read dataframe with pdal and detect lines
+    #   :TODO onderste kwartiel binnen polygoon
+    #    :TODO count, max
     #     # stems are lines
     #     for name, group in points.groupby('xy_clusterID'):
     #         group = group[group.HeightAboveGround <= 2]
@@ -288,28 +312,37 @@ class DetectorTree:
         pipeline_config = {
             "pipeline": [
                 {
-                    "type": "filters.smrf"
+                    "type": "filters.smrf",
+                    "returns": "last, only",
+                    "slope": 0.1,
+                    "window": 18,
+                    "threshold": 1,
+                    "scalar": 1.5
                 },
                 {
                     "type": "filters.hag"
                 },
-                # {
-                #     "type": "filters.outlier",
-                #     "method": "statistical",
-                #     "mean_k": 12,
-                #     "multiplier": 2.2
-                # },
+                {
+                    "type": "filters.approximatecoplanar",
+                    "knn": 8,
+                    "thresh1": 25,
+                    "thresh2": 6
+                },
+                {
+                    "type": "filters.normal",
+                    "knn": 8
+                },
                 {
                     "type": "filters.range",
-                    "limits": "HeightAboveGround[0.5:), Classification![7:7]"
+                    "limits": "HeightAboveGround[0.5:), Classification![7:7], Coplanar[0:0]"
                 }
-
             ]
         }
 
         # group = group[group.HeightAboveGround <= 2]
         # group = group[['X', 'Y', 'Z', 'pid', 'xy_clusterID', 'Red', 'Green', 'Blue', 'polygon_id']]
-        print(points.shape)
+        # print(points['NumberOfReturns'].min(), points['NumberOfReturns'].max(), points['NumberOfReturns'].mean())
+        # print(points['ReturnNumber'].min(), points['ReturnNumber'].max(), points['ReturnNumber'].mean())
         try:
             p = pdal.Pipeline(json.dumps(pipeline_config), arrays=[points])
             p.validate()  # check if our JSON and options were good
@@ -319,9 +352,8 @@ class DetectorTree:
 
         except Exception as e:
             trace = traceback.format_exc()
+            print(f'{points.shape[0]} points, probably not enough to second filter.')
             print("Unexpected error:", trace)
 
             out_points = points.copy()
-
-
         return pd.DataFrame(out_points)
