@@ -47,7 +47,7 @@ class DetectorTree:
         self.tree_coords = pd.DataFrame(data={'X': [],
                                               'Y': []})
 
-        # masks = np.vstack([self.ground_mask, self.n_returns_mask, self.linearity_mask, self.coplanar_mask])  #
+        # masks = np.vstack([self.ground_mask, self.n_returns_mask, self.radialdensity_mask, self.linearity_mask])
         masks = np.vstack([self.ground_mask, self.n_returns_mask, self.radialdensity_mask, self.linearity_mask])
         self.masks = np.sum(masks, axis=0) == 0
 
@@ -86,37 +86,6 @@ class DetectorTree:
                 {
                     "type": "filters.crop",
                     "polygon": polygon_wkt
-                },
-                {
-                    "type": "filters.approximatecoplanar",
-                    "knn": 8,
-                    "thresh1": 25,
-                    "thresh2": 6
-                },
-                {
-                    "type": "filters.covariancefeatures",
-                    "knn": 8,
-                    "threads": 6,
-                    "feature_set": "Dimensionality"
-                },
-                {
-                    "type": "filters.outlier"
-                },
-                {
-                    "type": "filters.smrf",
-                    "returns": "last,only",
-                    "slope": 0.2,
-                    "window": 18,
-                    "threshold": 0.45,
-                    "scalar": 1.2,
-                    "ignore": "Classification[7:7]",
-                },
-                {
-                    "type": "filters.hag"
-                },
-                {
-                    "type": "filters.radialdensity",
-                    "radius": 2.0
                 }
             ]
         }
@@ -153,11 +122,11 @@ class DetectorTree:
                                               'Red': masked_points['Red'],
                                               'Green': masked_points['Green'],
                                               'Blue': masked_points['Blue'],
-                                              'HAG': masked_points['HeightAboveGround'],
-                                              'Linearity': masked_points['Linearity'],
-                                              'Planarity': masked_points['Planarity'],
-                                              'Scattering': masked_points['Scattering'],
-                                              'Verticality': masked_points['Verticality'],
+                                              # 'HAG': masked_points['HeightAboveGround'],
+                                              # 'Linearity': masked_points['Linearity'],
+                                              # 'Planarity': masked_points['Planarity'],
+                                              # 'Scattering': masked_points['Scattering'],
+                                              # 'Verticality': masked_points['Verticality'],
                                               'Classification': xy_clusterer.labels_})
         # remove "noise" points
         self.clustered_points = self.clustered_points[self.clustered_points.Classification >= 0]
