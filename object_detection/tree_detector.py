@@ -35,7 +35,11 @@ class DetectorTree:
         self.tree_df = GeoDataFrame({'xy_clusterID': [],
                                      'geometry': [],
                                      "meanZ": [],
-                                     "n_pts": []})
+                                     "n_pts": [],
+                                     "NX": [],
+                                     "NY": [],
+                                     "NZ": [],
+                                     "Coplanar": []})
 
         # Masks
         self.ground_mask = self.raw_points['Classification'] == 2
@@ -89,6 +93,34 @@ class DetectorTree:
                 {
                     "type": "filters.crop",
                     "polygon": polygon_wkt
+                },
+                {
+                    "type": "filters.range",
+                    "limits": "Classification[1:1]"
+                },
+                {
+                    "type": "filters.smrf",
+                    "scalar": 1.2,
+                    "slope": 0.2,
+                    "threshold": 0.45,
+                    "window": 16.0
+                },
+                {
+                    "type": "filters.hag"
+                },
+                {
+                    "type": "filters.ferry",
+                    "dimensions": "HeightAboveGround=HAG1"
+                },
+                {
+                    "type": "filters.approximatecoplanar",
+                    "knn": 8,
+                    "thresh1": 25,
+                    "thresh2": 6
+                },
+                {
+                    "type": "filters.normal",
+                    "knn": 8
                 }
             ]
         }
@@ -111,7 +143,6 @@ class DetectorTree:
     def cluster_on_xy(self, min_cluster_size, min_samples):
 
         masked_points = self.raw_points[self.masks]
-
         start = time.time()
         xy = np.array([masked_points['X'], masked_points['Y']]).T
 
@@ -125,11 +156,11 @@ class DetectorTree:
                                               'Red': masked_points['Red'],
                                               'Green': masked_points['Green'],
                                               'Blue': masked_points['Blue'],
-                                              # 'HAG': masked_points['HeightAboveGround'],
-                                              # 'Linearity': masked_points['Linearity'],
-                                              # 'Planarity': masked_points['Planarity'],
-                                              # 'Scattering': masked_points['Scattering'],
-                                              # 'Verticality': masked_points['Verticality'],
+                                              'HAG': masked_points['HAG1'],
+                                              'Coplanar': masked_points['Coplanar'],
+                                              'NormalX': masked_points['NormalX'],
+                                              'NormalY': masked_points['NormalY'],
+                                              'NormalZ': masked_points['NormalZ'],
                                               'Classification': xy_clusterer.labels_})
         # remove "noise" points
         self.clustered_points = self.clustered_points[self.clustered_points.Classification >= 0]
@@ -137,7 +168,7 @@ class DetectorTree:
         print(f'found {np.unique(len(np.unique(self.clustered_points.Classification)))[0]} xy_clusters')
         print(f'clustering on xy took {round(end - start, 2)} seconds')
 
-    def convex_hullify(self, points, kmean_pols = False):
+    def convex_hullify(self, points, kmean_pols=False):
         try:
             self.tree_df.drop(self.tree_df.index, inplace=True)
         except:
@@ -177,7 +208,11 @@ class DetectorTree:
                     self.tree_df.loc[len(self.tree_df)] = [int(name),
                                                            loads(wkt),
                                                            group.Z.mean(),
-                                                           group.shape[0]]
+                                                           group.shape[0],
+                                                           group.NormalX.mean(),
+                                                           group.NormalY.mean(),
+                                                           group.NormalZ.mean(),
+                                                           group.Coplanar.mean()]
 
     def find_points_in_polygons(self, polygon_df):
         # cluster_points = self.raw_points[self.ground_mask.__invert__()]
@@ -185,10 +220,10 @@ class DetectorTree:
         xy = [Point(coords) for coords in zip(cluster_points['X'], cluster_points['Y'], cluster_points['Z'])]
 
         # do i need to pre-process?
-        cluster_data = preprocess(cluster_points)
-            # cluster_points[['X', 'Y', 'Z',
-            #                 'Red', 'Green', 'Blue',
-            #                 'Intensity', 'ReturnNumber', 'NumberOfReturns']])
+        cluster_data = preprocess(cluster_points[['X', 'Y', 'Z',
+                                                  'Red', 'Green', 'Blue',
+                                                  'Intensity', 'ReturnNumber', 'NumberOfReturns',
+                                                  'HAG1', "Coplanar", "NormalX", "NormalY", "NormalZ"]])
 
         points_df = GeoDataFrame(cluster_data, geometry=xy)
         grouped_points = sjoin(points_df, polygon_df, how='left')
@@ -209,7 +244,13 @@ class DetectorTree:
         # TODO: see if it is possible to use initial clusterpoints
         to_cluster = pd.DataFrame(data={'pid': []})
         labs = pd.DataFrame(data={'labs': [0] * len(xy_grouped_points.pid),
-                                  'pid': xy_grouped_points.pid},
+                                  'pid': xy_grouped_points.pid,
+                                  'HeightAboveGround': [0] * len(xy_grouped_points.pid),
+                                  'Coplanar': [0] * len(xy_grouped_points.pid),
+                                  'NX': [0] * len(xy_grouped_points.pid),
+                                  'NY': [0] * len(xy_grouped_points.pid),
+                                  'NZ': [0] * len(xy_grouped_points.pid)},
+
                             index=xy_grouped_points.pid)
         labs.drop_duplicates(subset=['pid'], keep='first', inplace=True)
 
@@ -231,7 +272,7 @@ class DetectorTree:
 
                 new_labs = pd.DataFrame(data={'labs': kmeans_labels,
                                               'pid': to_cluster.pid,
-                                              'HeightAboveGround': to_cluster.HeightAboveGround,
+                                              'HeightAboveGround': to_cluster.HAG1,
                                               'Coplanar': to_cluster.Coplanar,
                                               'NormalX': to_cluster.NormalX,
                                               'NormalY': to_cluster.NormalY,
@@ -262,7 +303,7 @@ class DetectorTree:
         # sorted_labs = labs.labs[array_index]
         self.kmean_grouped_points['value_clusterID'] = labs.labs * 10
 
-        added_cols = ['HeightAboveGround', 'Coplanar', 'NormalX', 'NormalY', 'NormalZ']
+        added_cols = ['HeightAboveGround', 'Coplanar', 'NormalX', 'NormalY', 'NormalZ', "Coplanar", "NormalX"]
         for col in added_cols:
             self.kmean_grouped_points[col] = eval(f'labs.{col}')
 
@@ -311,30 +352,34 @@ class DetectorTree:
     def second_filter(self, points):
         pipeline_config = {
             "pipeline": [
+                # {
+                #     "type": "filters.smrf",
+                #     "returns": "last, only",
+                #     "slope": 0.1,
+                #     "window": 18,
+                #     "threshold": 1,
+                #     "scalar": 1.5
+                # },
+                # {
+                #     "type": "filters.hag"
+                # },
+                # {
+                #     "type": "filters.range",
+                #     "limits": "HeightAboveGround[0.5:), Classification![7:7], Coplanar[0:0]"
+                # },
+                # {
+                #     "type": "filters.range",
+                #     "limits": "HAG1[0.5:), Classification![7:7], Coplanar[0:0]"
+                # },
                 {
-                    "type": "filters.smrf",
-                    "returns": "last, only",
-                    "slope": 0.1,
-                    "window": 18,
-                    "threshold": 1,
-                    "scalar": 1.5
-                },
-                {
-                    "type": "filters.hag"
+                    "type": "filters.normal",
+                    "knn": 8
                 },
                 {
                     "type": "filters.approximatecoplanar",
                     "knn": 8,
                     "thresh1": 25,
                     "thresh2": 6
-                },
-                {
-                    "type": "filters.normal",
-                    "knn": 8
-                },
-                {
-                    "type": "filters.range",
-                    "limits": "HeightAboveGround[0.5:), Classification![7:7], Coplanar[0:0]"
                 }
             ]
         }
@@ -347,6 +392,7 @@ class DetectorTree:
             p = pdal.Pipeline(json.dumps(pipeline_config), arrays=[points])
             p.validate()  # check if our JSON and options were good
             p.execute()
+            # normalZ dissapears?
             arrays = p.arrays
             out_points = arrays[0]
 

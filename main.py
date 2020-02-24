@@ -36,8 +36,8 @@ tree.find_points_in_polygons(tree.tree_df)
 tree.kmean_cluster(tree.xy_grouped_points, min_dist=5, min_height=0, gridsize=10)
 tree.convex_hullify(tree.kmean_grouped_points, kmean_pols=True)
 df_to_pg(tree.tree_df, schema='bomen', table_name='km_bomen')
-#
-write_df = tree.kmean_grouped_points[['pid', 'X', 'Y', 'Z', 'Red', 'Green', 'Blue']]
+
+write_df = tree.kmean_grouped_points[['pid', 'X', 'Y', 'Z', 'Red', 'Green', 'Blue', 'Classification']]
 dataframe_to_laz(write_df, 'tst_fn.laz')
 
 # radial density
