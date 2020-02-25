@@ -25,7 +25,7 @@ box = 122287.4, 483709.0, 122398.8, 483781.5
 # box = 122317.5,483749.3, 122443.9,483838.5
 
 tree = DetectorTree(box)
-tree.cluster_on_xy(min_cluster_size=30, min_samples=10)
+tree.hdbscan_on_points(min_cluster_size=30, min_samples=10, xyz=False)
 tree.convex_hullify(points=tree.clustered_points)
 df_to_pg(tree.tree_df, schema='bomen', table_name='xy_bomen')
 
@@ -35,7 +35,7 @@ df_to_pg(tree.tree_df, schema='bomen', table_name='xy_bomen')
 
 tree.find_points_in_polygons(tree.tree_df)
 tree.kmean_cluster(tree.xy_grouped_points,
-                   min_dist=4,
+                   min_dist=5,
                    min_height=0,
                    gridsize=1)
 tree.convex_hullify(tree.kmean_grouped_points, kmean_pols=True)
@@ -49,13 +49,6 @@ write_df = tree.kmean_grouped_points[['pid',
 for i, color in enumerate(['Red', 'Green', 'Blue']):
     col = write_df.apply(lambda row: colors[int(row['Classification'])][i], axis=1)
     write_df[color] = col
-
-# red =
-# green = write_df.apply(lambda row: colors[int(row['Classification'])][1], axis=1)
-# blue = write_df.apply(lambda row: colors[int(row['Classification'])][2], axis=1)
-# write_df['Red'] = red
-# write_df['Green'] = green
-# write_df['Blue'] = blue
 
 dataframe_to_laz(write_df, 'tst_fn.laz')
 
