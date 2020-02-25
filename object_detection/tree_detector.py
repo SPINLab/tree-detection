@@ -27,9 +27,11 @@ class DetectorTree:
         self.xmin, self.ymin, self.xmax, self.ymax = box
         self.geom_box = geometry.box(self.xmin, self.ymin, self.xmax, self.ymax)
         self.wkt_box = self.geom_box.wkt
+
         start = time.time()
         self.raw_points = self.ept_reader(self.wkt_box)
         end = time.time()
+
         print(f'reading from the ept took {round(end - start, 2)}')
         print(f'Total amount of points read: {self.raw_points.shape[0]}')
         self.tree_df = GeoDataFrame({'xy_clusterID': [],
@@ -144,7 +146,7 @@ class DetectorTree:
 
         masked_points = self.raw_points[self.masks]
         start = time.time()
-        xy = np.array([masked_points['X'], masked_points['Y']]).T
+        xy = np.array([masked_points['X'], masked_points['Y'], masked_points['Z']]).T
 
         xy_clusterer = HDBSCAN(min_cluster_size=min_cluster_size,
                                min_samples=min_samples)
@@ -278,7 +280,7 @@ class DetectorTree:
                                               'NormalY': to_cluster.NormalY,
                                               'NormalZ': to_cluster.NormalZ},
                                         index=to_cluster.pid)
-                new_labs.drop_duplicates(subset=['pid'], keep='first', inplace=True)
+                # new_labs.drop_duplicates(subset=['pid'], keep='first', inplace=True)
 
                 try:
                     labs.update(new_labs)
@@ -297,13 +299,13 @@ class DetectorTree:
                 new_labs = pd.DataFrame(data={'labs': [1] * len(group.pid),
                                               'pid': to_cluster.pid},
                                         index=group.pid)
-                new_labs.drop_duplicates(subset=['pid'], keep='first', inplace=True)
+                # new_labs.drop_duplicates(subset=['pid'], keep='first', inplace=True)
                 labs.update(new_labs)
         # array_index = labs.pid.argsort()
         # sorted_labs = labs.labs[array_index]
         self.kmean_grouped_points['value_clusterID'] = labs.labs * 10
 
-        added_cols = ['HeightAboveGround', 'Coplanar', 'NormalX', 'NormalY', 'NormalZ', "Coplanar", "NormalX"]
+        added_cols = ['HeightAboveGround', 'Coplanar', 'NX', 'NY', 'NZ', "Coplanar"]
         for col in added_cols:
             self.kmean_grouped_points[col] = eval(f'labs.{col}')
 
@@ -371,6 +373,10 @@ class DetectorTree:
                 #     "type": "filters.range",
                 #     "limits": "HAG1[0.5:), Classification![7:7], Coplanar[0:0]"
                 # },
+                {
+                    "type": "filters.range",
+                    "limits": "HAG1[0.5:)"
+                },
                 {
                     "type": "filters.normal",
                     "knn": 8

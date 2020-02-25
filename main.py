@@ -1,6 +1,7 @@
 ### local_maxima
-from object_detection.helper_functions import df_to_pg, dataframe_to_laz
+from object_detection.helper_functions import df_to_pg, dataframe_to_laz, get_colors
 from object_detection.tree_detector import DetectorTree
+import numpy as np
 
 # losse bomen en clusters
 # box = 122539.6, 490351.4, 122607.8, 490403.6
@@ -33,11 +34,29 @@ df_to_pg(tree.tree_df, schema='bomen', table_name='xy_bomen')
 # df_to_pg(tree.tree_coords, schema='bomen', table_name='stammen')
 
 tree.find_points_in_polygons(tree.tree_df)
-tree.kmean_cluster(tree.xy_grouped_points, min_dist=5, min_height=0, gridsize=10)
+tree.kmean_cluster(tree.xy_grouped_points,
+                   min_dist=4,
+                   min_height=0,
+                   gridsize=1)
 tree.convex_hullify(tree.kmean_grouped_points, kmean_pols=True)
 df_to_pg(tree.tree_df, schema='bomen', table_name='km_bomen')
+colors = get_colors(len(np.unique(tree.kmean_grouped_points['Classification'])))
+write_df = tree.kmean_grouped_points[['pid',
+                                      'X', 'Y', 'Z',
+                                      # 'Red', 'Green', 'Blue',
+                                      'Classification']]
 
-write_df = tree.kmean_grouped_points[['pid', 'X', 'Y', 'Z', 'Red', 'Green', 'Blue', 'Classification']]
+for i, color in enumerate(['Red', 'Green', 'Blue']):
+    col = write_df.apply(lambda row: colors[int(row['Classification'])][i], axis=1)
+    write_df[color] = col
+
+# red =
+# green = write_df.apply(lambda row: colors[int(row['Classification'])][1], axis=1)
+# blue = write_df.apply(lambda row: colors[int(row['Classification'])][2], axis=1)
+# write_df['Red'] = red
+# write_df['Green'] = green
+# write_df['Blue'] = blue
+
 dataframe_to_laz(write_df, 'tst_fn.laz')
 
-# radial density
+
