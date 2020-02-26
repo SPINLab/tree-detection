@@ -1,20 +1,23 @@
 import json
-import traceback
 import time
+import traceback
 
-import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pdal
 from geopandas import GeoDataFrame, sjoin
+from hdbscan import HDBSCAN
 from scipy.spatial.qhull import ConvexHull
 from shapely import geometry
 from shapely.geometry import Point
 from shapely.wkt import loads
 from sklearn.cluster import KMeans
-from hdbscan import HDBSCAN
-from object_detection.helper_functions import find_n_clusters_peaks, df_to_pg, former_preprocess_now_add_pid, \
-    dataframe_to_laz, ept_reader
+
+from object_detection.helper_functions import \
+    find_n_clusters_peaks, \
+    df_to_pg, \
+    former_preprocess_now_add_pid, \
+    ept_reader
 
 
 class DetectorTree:
@@ -43,12 +46,15 @@ class DetectorTree:
         # Masks
         self.ground_mask = self.raw_points['Classification'] == 2
         self.n_returns_mask = self.raw_points['NumberOfReturns'] < 2
+
         masks = np.vstack([self.ground_mask, self.n_returns_mask])
         self.masks = np.sum(masks, axis=0) == 0
 
         # initialize an empty DataFrames for writing to database later
         self.tree_coords = pd.DataFrame(data={'X': [],
-                                              'Y': []})
+                                              'Y': [],
+                                              'Z': []
+                                              })
         self.tree_df = GeoDataFrame({'xy_clusterID': [],
                                      'geometry': [],
                                      "meanZ": [],
@@ -129,6 +135,7 @@ class DetectorTree:
             else:
                 # performs convexhull
                 coords = np.array([group.X, group.Y]).T
+                # :TODO can I do this better? Params?
                 polygon = ConvexHull(coords)
 
                 # build wkt string
@@ -147,12 +154,12 @@ class DetectorTree:
 
                 # if the area is larger than 800 m2; it's not a tree
                 elif kmean_pols and loads(wkt).area >= 800:
-                    print(points.columns)
                     print(f'dropped {name} because polygon is too big')
                     points.drop(points.groupby('Classification').get_group(name).index)
 
                 # here goes more selection of polygons
                 # :TODO put all the elifs and the write to df in own function?
+                # :TODO if NZ > 0.7, likely to contain low points
 
                 else:
                     # write to df
@@ -204,18 +211,17 @@ class DetectorTree:
         grouped_points = grouped_points[grouped_points.xy_clusterID >= 0]
         self.xy_grouped_points = grouped_points.rename(columns={'index_right': 'polygon_id'})
 
-    def kmean_cluster(self, xy_grouped_points, min_dist, min_height, gridsize):
+    def kmean_cluster(self, xy_grouped_points, min_dist, relative_threshold, gridsize):
         """
 
-        :param xy_grouped_points [GeoPandasDataFrame]: the points classified per polygon
-        :param min_dist [int]: see find_n_clusters_peaks in self.kmean_cluster_group
-        :param min_height [int]: see find_n_clusters_peaks in self.kmean_cluster_group
-        :param gridsize [int]: see find_n_clusters_peaks in self.kmean_cluster_group
+        :param xy_grouped_points: [GeoPandasDataFrame]: the points classified per polygon
+        :param min_dist: [int]: see find_n_clusters_peaks in self.kmean_cluster_group
+        :param relative_threshold: [int]: see find_n_clusters_peaks in self.kmean_cluster_group
+        :param gridsize: [int]: see find_n_clusters_peaks in self.kmean_cluster_group
 
         :return: writes to self.kmean_grouped_points
         """
         # TODO: see if it is possible to use initial clusterpoints
-
         # Initialize dataframes to write to
         to_cluster = pd.DataFrame(data={'pid': []})
         labs = pd.DataFrame(data={'labs': [0] * len(xy_grouped_points.pid),
@@ -244,7 +250,10 @@ class DetectorTree:
                 # :TODO under construction
                 to_cluster = self.second_filter(group.to_records())
                 # actual kmeans clustering.
-                kmeans_labels = self.kmean_cluster_group(to_cluster, min_dist, min_height, gridsize)
+                kmeans_labels = self.kmean_cluster_group(group=to_cluster,
+                                                         min_dist=min_dist,
+                                                         relative_threshold=relative_threshold,
+                                                         round_val=gridsize)
 
                 # Create the new labs dataframe
                 new_labs = pd.DataFrame(data={'labs': kmeans_labels,
@@ -288,15 +297,15 @@ class DetectorTree:
                      self.kmean_grouped_points[['value_clusterID', 'xy_clusterID']].values.astype(str)]
         self.kmean_grouped_points['Classification'] = pd.factorize(combi_ids)[0]
 
-    def kmean_cluster_group(self, group, min_dist, min_height, gridsize):
+    def kmean_cluster_group(self, group, min_dist, relative_threshold, round_val):
         """
         Kmeans clustering performed on a subset (tree or cluster of trees) of points
 
 
         :param group: [pd.DataFrame]The points including x y and z columns
         :param min_dist: see find_n_clusters_peaks
-        :param min_height: see find_n_clusters_peaks
-        :param gridsize: see find_n_clusters_peaks
+        :param relative_threshold: see find_n_clusters_peaks
+        :param round_val: see find_n_clusters_peaks
         :return: a series of the labels in the order of the input DataFrame
         """
         # Clustering is performed on only x y and z
@@ -305,14 +314,34 @@ class DetectorTree:
                                  group.Z]).T
 
         # Number of clusters is found, necessary for kmeans
-        n_clusters, coordinates = find_n_clusters_peaks(cluster_data,
-                                                        min_dist=min_dist,
+        # :TODO allometric scaling????
+        n_clusters, coordinates = find_n_clusters_peaks(cluster_data=cluster_data
                                                         # is rounded to a multiple of the gridsize
-                                                        min_height=min_height,  # min(group.Y) + 1,
-                                                        grid_size=gridsize)
+                                                        , min_dist=min_dist
+                                                        , round_val=round_val
+                                                        , relative_threshold=relative_threshold
+                                                        )
 
         # actual kmeans clustering
-        kmeans = KMeans(n_clusters=n_clusters).fit(cluster_data)
+        # :TODO init{‘k-means++’, ‘random’} or ndarray of shape (n_clusters, n_features), default=’k-means++’
+
+        # to add initial cluster points
+        if len(coordinates) > 0:
+            # if False:
+            coordinates = np.array(coordinates)
+            self.tree_coords = self.tree_coords.append(pd.DataFrame(data={'X': coordinates.T[0],
+                                                                          'Y': coordinates.T[1],
+                                                                          'Z': coordinates.T[2]}))
+            self.tree_coords['geometry'] = [Point(x, y) for x, y, z in zip(self.tree_coords.X,
+                                                                           self.tree_coords.Y,
+                                                                           self.tree_coords.Z)]
+            self.tree_coords = GeoDataFrame(self.tree_coords, geometry='geometry')
+
+            # TODO nearest neighbours?
+            print('max iter is 1')
+            kmeans = KMeans(n_clusters=n_clusters, max_iter=1, init=np.array(coordinates)).fit(cluster_data)
+        else:
+            kmeans = KMeans(n_clusters=n_clusters, max_iter=1).fit(cluster_data)
         return kmeans.labels_
 
     def second_filter(self, points):

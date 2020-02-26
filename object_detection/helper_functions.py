@@ -10,7 +10,6 @@ import pandas as pd
 from shapely.wkt import loads
 from skimage.feature import peak_local_max
 from sqlalchemy import create_engine
-from sklearn.preprocessing import StandardScaler
 
 
 def ept_reader(polygon_wkt: str) -> np.ndarray:
@@ -43,10 +42,12 @@ def ept_reader(polygon_wkt: str) -> np.ndarray:
                 "polygon": polygon_wkt
             },
             {
+                # Actually filters the points that are not 'unclasified' by AHN
                 "type": "filters.range",
                 "limits": "Classification[1:1]"
             },
             {
+                # ground filter
                 "type": "filters.smrf",
                 "scalar": 1.2,
                 "slope": 0.2,
@@ -61,12 +62,14 @@ def ept_reader(polygon_wkt: str) -> np.ndarray:
                 "dimensions": "HeightAboveGround=HAG1"
             },
             {
+                # :TODO do i use this?
                 "type": "filters.approximatecoplanar",
                 "knn": 8,
                 "thresh1": 25,
                 "thresh2": 6
             },
             {
+                # :TODO can this go?
                 "type": "filters.normal",
                 "knn": 8
             }
@@ -134,26 +137,33 @@ def round_to_val(a, round_val):
     return np.round(np.array(a, dtype=float) / round_val) * round_val
 
 
-def find_n_clusters_peaks(cluster_data, grid_size, min_dist, min_height):
+def find_n_clusters_peaks(cluster_data, round_val, min_dist, relative_threshold):
+    # :TODO Exaggerate height? Z*Z?
     points = pd.DataFrame(data=cluster_data,
                           columns=['X', 'Y', 'Z'])
 
-    img, minx, miny = interpolate_df(points, grid_size)
+    img, minx, miny = interpolate_df(points, round_val)
 
-    indices = peak_local_max(img, min_distance=min_dist, threshold_abs=min_height)
+    # peak_local_max options
+    # :TODO better
+    # num_peaks : int, optional
+    # threshold_rel : float, optional
+    indices = peak_local_max(img, min_distance=min_dist, threshold_rel=relative_threshold)
+
     n_cluster = indices.shape[0]
 
     # TODO return coordinates
-    mins = [[minx, miny]] * indices.shape[0]
-    mapped = map(add_vectors, zip(indices, mins))
+    mins = [[minx, miny, [0]]] * indices.shape[0]
+    z = [img[i[0], i[1]] for i in indices]
+    mapped = map(add_vectors, zip(indices, mins, z))
     coordinates = [coord for coord in mapped]
 
     return max(1, n_cluster), coordinates
 
 
-def interpolate_df(xyz_points, grid_size):
-    xyz_points['x_round'] = round_to_val(xyz_points.X, grid_size)
-    xyz_points['y_round'] = round_to_val(xyz_points.Y, grid_size)
+def interpolate_df(xyz_points, round_val):
+    xyz_points['x_round'] = round_to_val(xyz_points.X, round_val)
+    xyz_points['y_round'] = round_to_val(xyz_points.Y, round_val)
 
     binned_data = xyz_points.groupby(['x_round', 'y_round'], as_index=False).max()
 
@@ -178,7 +188,9 @@ def df_to_pg(input_gdf,
              host='leda.geodan.nl',
              username='arnot',
              password=''):
-    geo_dataframe = input_gdf.copy()
+
+    geo_dataframe = input_gdf.copy().reset_index()
+    geom_type = geo_dataframe.geometry.geom_type[0]
     engine = create_engine(f'postgresql://{username}@{host}:{port}/{database}')
     geo_dataframe['geom'] = geo_dataframe['geometry'].apply(lambda x: WKTElement(x.wkt, srid=28992))
     geo_dataframe.drop('geometry', 1, inplace=True)
@@ -189,38 +201,42 @@ def df_to_pg(input_gdf,
                          if_exists='replace',
                          index=False,
                          schema=schema,
-                         dtype={'geom': Geometry(input_gdf.geometry.geom_type[0], srid=28992)})
+                         dtype={'geom': Geometry(geom_type, srid=28992)})
 
 
 def former_preprocess_now_add_pid(points):
     f_pts = pd.DataFrame(points)
     f_pts['pid'] = f_pts.index
-    #:TODO HACK!! Not pre processing, just adding pid
     return f_pts
-
-    columns_to_keep = [column
-                       for column in f_pts.columns
-                       if column not in ['pid',
-                                         'X', 'Y', 'Z',
-                                         'Red', 'Green', 'Blue',
-                                         'Intensity', 'ReturnNumber', 'NumberOfReturns',
-                                         'HeightAboveGround'
-                                         ]]
-    scaler = StandardScaler()
-    scaler.fit(f_pts[columns_to_keep])
-    f_pts[columns_to_keep] = scaler.transform(f_pts[columns_to_keep])
-    normalized_pointcloud = pd.DataFrame(data=f_pts,
-                                         columns=f_pts.columns)
-    return normalized_pointcloud
 
 
 def add_vectors(vec):
-    a, b = vec
-    return [a[0] + b[0], a[1] + b[1]]
+    coords, mins, z = vec
+    y, x = coords
+    minx, miny, minz = mins
 
+    return [minx + x, miny + y, z]
 
 def get_colors(n):
     cols = [[0, 0, 0], [1, 0, 103], [213, 255, 0], [255, 0, 86], [158, 0, 142],
+            [14, 76, 161], [255, 229, 2], [0, 95, 57], [0, 255, 0], [149, 0, 58], [255, 147, 126], [164, 36, 0],
+            [0, 21, 68], [145, 208, 203], [98, 14, 0], [107, 104, 130], [0, 0, 255], [0, 125, 181], [106, 130, 108],
+            [0, 174, 126], [194, 140, 159], [190, 153, 112], [0, 143, 156], [95, 173, 78], [255, 0, 0], [255, 0, 246],
+            [255, 2, 157], [104, 61, 59], [255, 116, 163], [150, 138, 232], [152, 255, 82], [167, 87, 64],
+            [1, 255, 254], [255, 238, 232], [254, 137, 0], [189, 198, 255], [1, 208, 255], [187, 136, 0],
+            [117, 68, 177], [165, 255, 210], [255, 166, 254], [119, 77, 0], [122, 71, 130], [38, 52, 0], [0, 71, 84],
+            [67, 0, 44], [181, 0, 255], [255, 177, 103], [255, 219, 102], [144, 251, 146], [126, 45, 210],
+            [189, 211, 147], [229, 111, 254], [222, 255, 116], [0, 255, 120], [0, 155, 255], [0, 100, 1], [0, 118, 255],
+            [133, 169, 0], [0, 185, 23], [120, 130, 49], [0, 255, 198], [255, 110, 65], [232, 94, 190],[1, 0, 103], [213, 255, 0], [255, 0, 86], [158, 0, 142],
+            [14, 76, 161], [255, 229, 2], [0, 95, 57], [0, 255, 0], [149, 0, 58], [255, 147, 126], [164, 36, 0],
+            [0, 21, 68], [145, 208, 203], [98, 14, 0], [107, 104, 130], [0, 0, 255], [0, 125, 181], [106, 130, 108],
+            [0, 174, 126], [194, 140, 159], [190, 153, 112], [0, 143, 156], [95, 173, 78], [255, 0, 0], [255, 0, 246],
+            [255, 2, 157], [104, 61, 59], [255, 116, 163], [150, 138, 232], [152, 255, 82], [167, 87, 64],
+            [1, 255, 254], [255, 238, 232], [254, 137, 0], [189, 198, 255], [1, 208, 255], [187, 136, 0],
+            [117, 68, 177], [165, 255, 210], [255, 166, 254], [119, 77, 0], [122, 71, 130], [38, 52, 0], [0, 71, 84],
+            [67, 0, 44], [181, 0, 255], [255, 177, 103], [255, 219, 102], [144, 251, 146], [126, 45, 210],
+            [189, 211, 147], [229, 111, 254], [222, 255, 116], [0, 255, 120], [0, 155, 255], [0, 100, 1], [0, 118, 255],
+            [133, 169, 0], [0, 185, 23], [120, 130, 49], [0, 255, 198], [255, 110, 65], [232, 94, 190],[1, 0, 103], [213, 255, 0], [255, 0, 86], [158, 0, 142],
             [14, 76, 161], [255, 229, 2], [0, 95, 57], [0, 255, 0], [149, 0, 58], [255, 147, 126], [164, 36, 0],
             [0, 21, 68], [145, 208, 203], [98, 14, 0], [107, 104, 130], [0, 0, 255], [0, 125, 181], [106, 130, 108],
             [0, 174, 126], [194, 140, 159], [190, 153, 112], [0, 143, 156], [95, 173, 78], [255, 0, 0], [255, 0, 246],
