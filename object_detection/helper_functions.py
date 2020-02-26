@@ -91,6 +91,7 @@ def ept_reader(polygon_wkt: str) -> np.ndarray:
     points = arrays[0]
     return points
 
+
 def write_to_laz(structured_array, path):
     '''
     writes a structured array to a .laz file
@@ -142,7 +143,7 @@ def find_n_clusters_peaks(cluster_data, round_val, min_dist, relative_threshold)
     img, minx, miny = interpolate_df(cluster_data, round_val)
 
     # peak_local_max options
-    # :TODO better
+    # :TODO do better
     # num_peaks : int, optional
     # threshold_rel : float, optional
     indices = peak_local_max(img, min_distance=min_dist, threshold_rel=relative_threshold)
@@ -150,12 +151,21 @@ def find_n_clusters_peaks(cluster_data, round_val, min_dist, relative_threshold)
     n_cluster = indices.shape[0]
 
     # TODO return coordinates
-    mins = [[minx, miny, [0]]] * indices.shape[0]
+    mins = [[minx, miny, 0]] * indices.shape[0]
     z = [img[i[0], i[1]] for i in indices]
-    mapped = map(add_vectors, zip(indices, mins, z))
+    round_val_for_map = [round_val] * n_cluster
+    mapped = map(add_vectors, zip(indices, mins, z, round_val_for_map))
     coordinates = [coord for coord in mapped]
 
     return max(1, n_cluster), coordinates
+
+
+def add_vectors(vec):
+    coords, mins, z, round_val = vec
+    y, x = coords
+    minx, miny, minz = mins
+
+    return [minx + (x * round_val), miny + (y * round_val), z]
 
 
 def interpolate_df(xyz_points, round_val):
@@ -167,20 +177,19 @@ def interpolate_df(xyz_points, round_val):
     xyz_points['x_round'] = round_to_val(xyz_points.X, round_val)
     xyz_points['y_round'] = round_to_val(xyz_points.Y, round_val)
 
-    binned_data = xyz_points.groupby(['x_round', 'y_round'], as_index=False).mean()
+    binned_data = xyz_points.groupby(['x_round', 'y_round'], as_index=False).max()
 
     minx = min(binned_data.x_round)
     miny = min(binned_data.y_round)
 
     x_arr = binned_data.x_round - min(binned_data.x_round)
     y_arr = binned_data.y_round - min(binned_data.y_round)
-    img = np.zeros([int(max(y_arr)) + 1, int(max(x_arr)) + 1])
 
-    img[y_arr.astype(np.int).values,
-        x_arr.astype(np.int).values] = binned_data.Z
+    img = np.zeros([len(np.unique(y_arr)) + 1,
+                    len(np.unique(x_arr)) + 1])
 
-    import matplotlib.pyplot as plt
-    plt.imshow(img)
+    img[round_to_val(y_arr / round_val, 1).astype(np.int),
+        round_to_val(x_arr / round_val, 1).astype(np.int)] = binned_data.Z
 
     return img, minx, miny
 
@@ -193,7 +202,6 @@ def df_to_pg(input_gdf,
              host='leda.geodan.nl',
              username='arnot',
              password=''):
-
     geo_dataframe = input_gdf.copy().reset_index()
     geom_type = geo_dataframe.geometry.geom_type[0]
     engine = create_engine(f'postgresql://{username}@{host}:{port}/{database}')
@@ -215,13 +223,6 @@ def former_preprocess_now_add_pid(points):
     return f_pts
 
 
-def add_vectors(vec):
-    coords, mins, z = vec
-    y, x = coords
-    minx, miny, minz = mins
-
-    return [minx + x, miny + y, z]
-
 def get_colors(n):
     cols = [[0, 0, 0], [1, 0, 103], [213, 255, 0], [255, 0, 86], [158, 0, 142],
             [14, 76, 161], [255, 229, 2], [0, 95, 57], [0, 255, 0], [149, 0, 58], [255, 147, 126], [164, 36, 0],
@@ -232,7 +233,8 @@ def get_colors(n):
             [117, 68, 177], [165, 255, 210], [255, 166, 254], [119, 77, 0], [122, 71, 130], [38, 52, 0], [0, 71, 84],
             [67, 0, 44], [181, 0, 255], [255, 177, 103], [255, 219, 102], [144, 251, 146], [126, 45, 210],
             [189, 211, 147], [229, 111, 254], [222, 255, 116], [0, 255, 120], [0, 155, 255], [0, 100, 1], [0, 118, 255],
-            [133, 169, 0], [0, 185, 23], [120, 130, 49], [0, 255, 198], [255, 110, 65], [232, 94, 190],[1, 0, 103], [213, 255, 0], [255, 0, 86], [158, 0, 142],
+            [133, 169, 0], [0, 185, 23], [120, 130, 49], [0, 255, 198], [255, 110, 65], [232, 94, 190], [1, 0, 103],
+            [213, 255, 0], [255, 0, 86], [158, 0, 142],
             [14, 76, 161], [255, 229, 2], [0, 95, 57], [0, 255, 0], [149, 0, 58], [255, 147, 126], [164, 36, 0],
             [0, 21, 68], [145, 208, 203], [98, 14, 0], [107, 104, 130], [0, 0, 255], [0, 125, 181], [106, 130, 108],
             [0, 174, 126], [194, 140, 159], [190, 153, 112], [0, 143, 156], [95, 173, 78], [255, 0, 0], [255, 0, 246],
@@ -241,7 +243,8 @@ def get_colors(n):
             [117, 68, 177], [165, 255, 210], [255, 166, 254], [119, 77, 0], [122, 71, 130], [38, 52, 0], [0, 71, 84],
             [67, 0, 44], [181, 0, 255], [255, 177, 103], [255, 219, 102], [144, 251, 146], [126, 45, 210],
             [189, 211, 147], [229, 111, 254], [222, 255, 116], [0, 255, 120], [0, 155, 255], [0, 100, 1], [0, 118, 255],
-            [133, 169, 0], [0, 185, 23], [120, 130, 49], [0, 255, 198], [255, 110, 65], [232, 94, 190],[1, 0, 103], [213, 255, 0], [255, 0, 86], [158, 0, 142],
+            [133, 169, 0], [0, 185, 23], [120, 130, 49], [0, 255, 198], [255, 110, 65], [232, 94, 190], [1, 0, 103],
+            [213, 255, 0], [255, 0, 86], [158, 0, 142],
             [14, 76, 161], [255, 229, 2], [0, 95, 57], [0, 255, 0], [149, 0, 58], [255, 147, 126], [164, 36, 0],
             [0, 21, 68], [145, 208, 203], [98, 14, 0], [107, 104, 130], [0, 0, 255], [0, 125, 181], [106, 130, 108],
             [0, 174, 126], [194, 140, 159], [190, 153, 112], [0, 143, 156], [95, 173, 78], [255, 0, 0], [255, 0, 246],

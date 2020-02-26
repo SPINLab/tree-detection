@@ -24,11 +24,11 @@ import numpy as np
 # GROOOOOOOT ring a 10 stuk? misschien wel grootst mogelijk....
 # box = 125889.8,489393.5 , 126516.1,489791.3
 
-# gewoon stukje a10
-# box = 126008.5, 489632.8, 126168.2, 489732.3
+# homogene bomenrij
+box = 126056.9,489631.9, 126132.1,489698.9
 
 # klein stukje a10
-box = 126014.7, 489644.0, 126055.8,489680.6
+# box = 126014.7, 489644.0, 126055.8,489680.6
 
 # dak
 # box = 122317.5,483749.3, 122443.9,483838.5
@@ -43,7 +43,7 @@ tree.find_points_in_polygons(tree.tree_df)
 tree.kmean_cluster(tree.xy_grouped_points,
                    min_dist=1,  # min_dist is in pixels
                    relative_threshold=0,
-                   round_val=0.5)
+                   round_val=1.5)
 tree.convex_hullify(tree.kmean_grouped_points, kmean_pols=True)
 
 df_to_pg(tree.tree_df, schema='bomen', table_name='km_bomen')

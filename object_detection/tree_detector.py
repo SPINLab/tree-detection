@@ -355,7 +355,7 @@ class DetectorTree:
 
             # TODO nearest neighbours?
             print('max iter is 1')
-            kmeans = KMeans(n_clusters=n_clusters, max_iter=1, init=np.array(coordinates)).fit(cluster_data)
+            kmeans = KMeans(n_clusters=n_clusters, max_iter=100, init=np.array(coordinates)).fit(cluster_data)
         else:
             kmeans = KMeans(n_clusters=n_clusters, max_iter=1).fit(cluster_data)
         return kmeans.labels_
