@@ -211,18 +211,34 @@ class DetectorTree:
         grouped_points = grouped_points[grouped_points.xy_clusterID >= 0]
         self.xy_grouped_points = grouped_points.rename(columns={'index_right': 'polygon_id'})
 
-    def kmean_cluster(self, xy_grouped_points, min_dist, relative_threshold, gridsize):
+    def find_peaks(self, grouped_points, min_dist, relative_threshold, round_val):
+        for name, group in grouped_points.groupby('xy_clusterID'):
+            tree_area = float(self.tree_df.loc[self.tree_df['xy_clusterID'] == int(name)].geometry.area)
+
+            # A tree needs to be bigger than 2 meters2 and have more than 10 points
+            if name >= 0 and tree_area >= 2 and group.shape[0] >= 10:
+                group = group.drop(['geometry'], axis=1)
+                n_clusters, coordinates = find_n_clusters_peaks(cluster_data=group
+                                                                # is rounded to a multiple of the gridsize
+                                                                , min_dist=min_dist
+                                                                , round_val=round_val
+                                                                , relative_threshold=relative_threshold
+                                                                )
+
+
+    def kmean_cluster(self, xy_grouped_points, min_dist, relative_threshold, round_val):
         """
 
         :param xy_grouped_points: [GeoPandasDataFrame]: the points classified per polygon
         :param min_dist: [int]: see find_n_clusters_peaks in self.kmean_cluster_group
         :param relative_threshold: [int]: see find_n_clusters_peaks in self.kmean_cluster_group
-        :param gridsize: [int]: see find_n_clusters_peaks in self.kmean_cluster_group
+        :param round_val: [int]: see find_n_clusters_peaks in self.kmean_cluster_group
 
         :return: writes to self.kmean_grouped_points
         """
         # TODO: see if it is possible to use initial clusterpoints
         # Initialize dataframes to write to
+        assert type(min_dist) == int, 'min_dist is is in pixels, therefor must be a int'
         to_cluster = pd.DataFrame(data={'pid': []})
         labs = pd.DataFrame(data={'labs': [0] * len(xy_grouped_points.pid),
                                   'pid': xy_grouped_points.pid,
@@ -253,7 +269,7 @@ class DetectorTree:
                 kmeans_labels = self.kmean_cluster_group(group=to_cluster,
                                                          min_dist=min_dist,
                                                          relative_threshold=relative_threshold,
-                                                         round_val=gridsize)
+                                                         round_val=round_val)
 
                 # Create the new labs dataframe
                 new_labs = pd.DataFrame(data={'labs': kmeans_labels,

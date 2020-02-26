@@ -139,10 +139,7 @@ def round_to_val(a, round_val):
 
 def find_n_clusters_peaks(cluster_data, round_val, min_dist, relative_threshold):
     # :TODO Exaggerate height? Z*Z?
-    points = pd.DataFrame(data=cluster_data,
-                          columns=['X', 'Y', 'Z'])
-
-    img, minx, miny = interpolate_df(points, round_val)
+    img, minx, miny = interpolate_df(cluster_data, round_val)
 
     # peak_local_max options
     # :TODO better
@@ -162,20 +159,28 @@ def find_n_clusters_peaks(cluster_data, round_val, min_dist, relative_threshold)
 
 
 def interpolate_df(xyz_points, round_val):
+    xyz_points = xyz_points.T
+    xyz_points = pd.DataFrame({'X': xyz_points[0],
+                               'Y': xyz_points[1],
+                               'Z': xyz_points[2]})
+
     xyz_points['x_round'] = round_to_val(xyz_points.X, round_val)
     xyz_points['y_round'] = round_to_val(xyz_points.Y, round_val)
 
-    binned_data = xyz_points.groupby(['x_round', 'y_round'], as_index=False).max()
+    binned_data = xyz_points.groupby(['x_round', 'y_round'], as_index=False).mean()
 
     minx = min(binned_data.x_round)
     miny = min(binned_data.y_round)
 
     x_arr = binned_data.x_round - min(binned_data.x_round)
     y_arr = binned_data.y_round - min(binned_data.y_round)
-
     img = np.zeros([int(max(y_arr)) + 1, int(max(x_arr)) + 1])
 
-    img[y_arr.astype(np.int).values, x_arr.astype(np.int).values] = binned_data.Z
+    img[y_arr.astype(np.int).values,
+        x_arr.astype(np.int).values] = binned_data.Z
+
+    import matplotlib.pyplot as plt
+    plt.imshow(img)
 
     return img, minx, miny
 

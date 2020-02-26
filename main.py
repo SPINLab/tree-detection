@@ -41,9 +41,9 @@ df_to_pg(tree.tree_df, schema='bomen', table_name='xy_bomen')
 
 tree.find_points_in_polygons(tree.tree_df)
 tree.kmean_cluster(tree.xy_grouped_points,
-                   min_dist=0,
-                   relative_threshold=0.2,
-                   gridsize=1)
+                   min_dist=1,  # min_dist is in pixels
+                   relative_threshold=0,
+                   round_val=0.5)
 tree.convex_hullify(tree.kmean_grouped_points, kmean_pols=True)
 
 df_to_pg(tree.tree_df, schema='bomen', table_name='km_bomen')
