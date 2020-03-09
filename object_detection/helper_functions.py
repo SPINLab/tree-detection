@@ -10,8 +10,10 @@ import pandas as pd
 from shapely.wkt import loads
 from skimage.feature import peak_local_max
 from sqlalchemy import create_engine
+from retry import retry
 
 
+@retry(tries=5, delay=1, backoff=3, max_delay=30)
 def ept_reader(polygon_wkt: str) -> np.ndarray:
     """
         Parameters
@@ -59,7 +61,7 @@ def ept_reader(polygon_wkt: str) -> np.ndarray:
             },
             {
                 "type": "filters.ferry",
-                "dimensions": "HeightAboveGround=HAG1"
+                "dimensions": "HeightAboveGround=HAG"
             },
             {
                 # :TODO do i use this?
@@ -129,6 +131,7 @@ def write_to_laz(structured_array, path):
 def dataframe_to_laz(dataframe, laz_fn, overwrite=True):
     if os.path.exists(laz_fn) and overwrite:
         os.remove(laz_fn)
+        print(f'removed {laz_fn}')
 
     result = dataframe.to_records()
     write_to_laz(result, laz_fn)
@@ -138,7 +141,7 @@ def round_to_val(a, round_val):
     return np.round(np.array(a, dtype=float) / round_val) * round_val
 
 
-def find_n_clusters_peaks(cluster_data, round_val, min_dist, relative_threshold):
+def find_n_clusters_peaks(cluster_data, round_val, min_dist):
     # :TODO Exaggerate height? Z*Z?
     img, minx, miny = interpolate_df(cluster_data, round_val)
 
@@ -146,7 +149,7 @@ def find_n_clusters_peaks(cluster_data, round_val, min_dist, relative_threshold)
     # :TODO do better
     # num_peaks : int, optional
     # threshold_rel : float, optional
-    indices = peak_local_max(img, min_distance=min_dist, threshold_rel=relative_threshold)
+    indices = peak_local_max(img, min_distance=min_dist)
 
     n_cluster = indices.shape[0]
 
@@ -164,7 +167,7 @@ def add_vectors(vec):
     coords, mins, z, round_val = vec
     y, x = coords
     minx, miny, minz = mins
-
+    print([minx + (x * round_val), miny + (y * round_val), z])
     return [minx + (x * round_val), miny + (y * round_val), z]
 
 
@@ -177,7 +180,7 @@ def interpolate_df(xyz_points, round_val):
     xyz_points['x_round'] = round_to_val(xyz_points.X, round_val)
     xyz_points['y_round'] = round_to_val(xyz_points.Y, round_val)
 
-    binned_data = xyz_points.groupby(['x_round', 'y_round'], as_index=False).max()
+    binned_data = xyz_points.groupby(['x_round', 'y_round'], as_index=False).count()
 
     minx = min(binned_data.x_round)
     miny = min(binned_data.y_round)
@@ -185,8 +188,10 @@ def interpolate_df(xyz_points, round_val):
     x_arr = binned_data.x_round - min(binned_data.x_round)
     y_arr = binned_data.y_round - min(binned_data.y_round)
 
-    img = np.zeros([len(np.unique(y_arr)) + 1,
-                    len(np.unique(x_arr)) + 1])
+    img_size_x = int(round(max(x_arr), 1))
+    img_size_y = int(round(max(y_arr), 1))
+
+    img = np.zeros([img_size_x + 200, img_size_y + 200])
 
     img[round_to_val(y_arr / round_val, 1).astype(np.int),
         round_to_val(x_arr / round_val, 1).astype(np.int)] = binned_data.Z
@@ -207,7 +212,7 @@ def df_to_pg(input_gdf,
     engine = create_engine(f'postgresql://{username}@{host}:{port}/{database}')
     geo_dataframe['geom'] = geo_dataframe['geometry'].apply(lambda x: WKTElement(x.wkt, srid=28992))
     geo_dataframe.drop('geometry', 1, inplace=True)
-    print('warning! For now everything in the database is replaced!!!')
+    print(f'warning! For now everything in {table_name} is replaced!!!')
 
     geo_dataframe.to_sql(table_name,
                          engine,
