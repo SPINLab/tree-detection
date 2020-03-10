@@ -32,6 +32,7 @@ def ept_reader(polygon_wkt: str) -> np.ndarray:
     ept_location: str = 'https://beta.geodan.nl/maquette/colorized-points/ahn3_nl/ept-subsets/ept.json'
     bounds = f"([{bbox[0]},{bbox[2]}],[{bbox[1]},{bbox[3]}])"
 
+    #:TODO poission sampling (0.25)
     pipeline_config = {
         "pipeline": [
             {
@@ -44,7 +45,7 @@ def ept_reader(polygon_wkt: str) -> np.ndarray:
                 "polygon": polygon_wkt
             },
             {
-                # Actually filters the points that are not 'unclasified' by AHN
+                # Actually filters the points that are not 'unclassified' by AHN
                 "type": "filters.range",
                 "limits": "Classification[1:1]"
             },
@@ -167,7 +168,6 @@ def add_vectors(vec):
     coords, mins, z, round_val = vec
     y, x = coords
     minx, miny, minz = mins
-    print([minx + (x * round_val), miny + (y * round_val), z])
     return [minx + (x * round_val), miny + (y * round_val), z]
 
 
@@ -180,7 +180,7 @@ def interpolate_df(xyz_points, round_val):
     xyz_points['x_round'] = round_to_val(xyz_points.X, round_val)
     xyz_points['y_round'] = round_to_val(xyz_points.Y, round_val)
 
-    binned_data = xyz_points.groupby(['x_round', 'y_round'], as_index=False).count()
+    binned_data = xyz_points.groupby(['x_round', 'y_round'], as_index=False).max()
 
     minx = min(binned_data.x_round)
     miny = min(binned_data.y_round)

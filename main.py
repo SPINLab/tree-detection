@@ -7,10 +7,10 @@ from object_detection.tree_detector import DetectorTree
 import numpy as np
 
 # losse bomen en clusters
-box = 122539.6, 490351.4, 122607.8, 490403.6
+# box = 122539.6, 490351.4, 122607.8, 490403.6
 
 # groter stukje
-# box = 122577.4, 483763.5 ,122720.1,483854.5
+# box = 122577.4, 483763.5, 122720.1, 483854.5
 
 # stukje met daken
 # box = 121970.5, 483782.7, 122107.5, 483871.9
@@ -22,7 +22,7 @@ box = 122539.6, 490351.4, 122607.8, 490403.6
 # box = 122544, 490380, 122553, 490386
 
 # stammen
-# box = 122287.4, 483709.0, 122398.8, 483781.5
+box = 122287.4, 483709.0, 122398.8, 483781.5
 
 # GROOOOOOOT ring a 10 stuk? misschien wel grootst mogelijk....
 # box = 125889.8,489393.5 , 126516.1,489791.3
@@ -37,7 +37,7 @@ box = 122539.6, 490351.4, 122607.8, 490403.6
 # box = 122317.5,483749.3, 122443.9,483838.5
 
 # Stukje kerngis
-# box = 122111.7, 482031.4, 122289.0, 482172.7
+box = 123727.2, 482705.0, 123949.8, 482846.3
 
 # defining the object that holds the points, tha mask and more
 tree = DetectorTree(box)
@@ -58,7 +58,7 @@ tree.tree_coords['geometry'] = [Point(x, y) for x, y, z in zip(tree.tree_coords.
                                                                tree.tree_coords.Z)]
 tree.tree_coords = GeoDataFrame(tree.tree_coords, geometry='geometry')
 
-# df_to_pg(tree.tree_coords, schema='bomen', table_name='stammen')
+df_to_pg(tree.tree_coords, schema='bomen', table_name='stammen')
 
 
 # colors/visualizing

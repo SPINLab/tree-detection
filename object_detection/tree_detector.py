@@ -45,8 +45,8 @@ class DetectorTree:
 
         # Masks
         self.ground_mask = self.raw_points['Classification'] == 2
-        self.n_returns_mask = self.raw_points['NumberOfReturns'] < 4
-        # self.n_many_returns_mask = self.raw_points['NumberOfReturns'] < 4
+        self.n_returns_mask = self.raw_points['NumberOfReturns'] < 2
+        self.n_many_returns_mask = self.raw_points['ReturnNumber'] >= 1
         masks = np.vstack([self.ground_mask, self.n_returns_mask])
         self.masks = np.sum(masks, axis=0) == 0
 
@@ -147,38 +147,56 @@ class DetectorTree:
                 firstx, firsty = polygon.points[polygon.vertices[0]]
                 wkt = wkt + f'{firstx} {firsty}))'
 
-                # if there are less than 8 points per square meter; it's not a tree
-                if (group.shape[0] / loads(wkt).area) <= 3:
-                    print(f'dropped {name} because less than 3 pts/m2')
-                    points = points.drop(points.groupby('Classification').get_group(name).index)
+                points = self.add_group_to_result(group, kmean_pols, name, points, wkt)
 
-                # if the area is larger than 800 m2; it's not a tree
-                elif kmean_pols and loads(wkt).area >= 800:
-                    print(f'dropped {name} because polygon is too big')
-                    points = points.drop(points.groupby('Classification').get_group(name).index)
+    def add_group_to_result(self, group, kmean_pols, name, points, wkt):
+        # if there are less than 8 points per square meter; it's not a tree
+        if (group.shape[0] / loads(wkt).area) <= 3:
+            try:
+                points = points.drop(points.groupby('Classification').get_group(name).index)
+                msg = f'dropped {name} because less than 3 pts/m2'
+            except:
+                msg = 'FAILED ' + msg
+                pass
+            print(msg)
 
-                # elif np.percentile(group.HAG, 90) < 1.5:
-                elif group.HAG.max() < 2:
-                    print(f'dropped {name} the so called tree is too small < 1.5 m')
-                    points = points.drop(points.groupby('Classification').get_group(name).index)
+        # if the area is larger than 800 m2; it's not a tree
+        elif kmean_pols and loads(wkt).area >= 800:
+            try:
+                points = points.drop(points.groupby('Classification').get_group(name).index)
+                print(f'dropped {name} because polygon is too big')
+            except:
+                pass
 
-                elif kmean_pols and group.NormalZ.mean() > 0.7:
-                    print(f'dropped {name} the so called tree is too flat (nz > 0.7')
-                    points = points.drop(points.groupby('Classification').get_group(name).index)
+        # elif np.percentile(group.HAG, 90) < 1.5:
+        elif group.HAG.max() < 2:
+            try:
+                points = points.drop(points.groupby('Classification').get_group(name).index)
+                print(f'dropped {name} the so called tree is too small < 1.5 m')
+            except:
+                pass
 
-                # here goes more selection of polygons
-                # :TODO put all the elifs and the write to df in own function?
+        elif kmean_pols and group.NormalZ.mean() > 0.7:
+            try:
+                points = points.drop(points.groupby('Classification').get_group(name).index)
+                print(f'dropped {name} the so called tree is too flat (nz > 0.7')
+            except:
+                pass
 
-                else:
-                    # write to df
-                    self.tree_df.loc[len(self.tree_df)] = [int(name),
-                                                           loads(wkt),
-                                                           group.HAG.mean(),
-                                                           group.shape[0],
-                                                           group.NormalX.mean(),
-                                                           group.NormalY.mean(),
-                                                           group.NormalZ.mean(),
-                                                           group.Coplanar.mean()]
+
+        # here goes more selection of polygons
+        # :TODO put all the elifs and the write to df in own function?
+        else:
+            # write to df
+            self.tree_df.loc[len(self.tree_df)] = [int(name),
+                                                   loads(wkt),
+                                                   group.HAG.mean(),
+                                                   group.shape[0],
+                                                   group.NormalX.mean(),
+                                                   group.NormalY.mean(),
+                                                   group.NormalZ.mean(),
+                                                   group.Coplanar.mean()]
+        return points
 
     def find_points_in_polygons(self, polygon_df):
         """
@@ -192,7 +210,7 @@ class DetectorTree:
         """
         # remove ground points
         # cluster_points = self.raw_points[self.ground_mask.__invert__()]
-        cluster_points = self.raw_points[self.masks]
+        cluster_points = self.raw_points[self.n_many_returns_mask]
         # cluster_points = self.raw_points.copy()
 
         # do i need to pre-process?
@@ -327,6 +345,7 @@ class DetectorTree:
         former_round_val = allom * 0.3
         round_val = Z * 0.2
         round_val = max(round_val, 0.25)
+        round_val = 3
 
         print(f'Z: {round(Z,2)} \t'
               f'former round value: {round(former_round_val,2)} \t'
@@ -408,11 +427,11 @@ class DetectorTree:
             out_points = points.copy()
         return pd.DataFrame(out_points)
 
-    def kmean_cluster_group(self, group, name):
-        xyz = np.array([group.X, group.Y]).T
-        from sklearn.preprocessing import StandardScaler
-        # scaler = StandardScaler().fit(xyz)
-        # xyz = scaler.transform(xyz)
-        self.meanshifter = MeanShift(n_jobs=7, max_iter=1000).fit(xyz)
-        return self.meanshifter.labels_
+    # def kmean_cluster_group(self, group, name):
+    #     xyz = np.array([group.X, group.Y]).T
+    #     from sklearn.preprocessing import StandardScaler
+    #     # scaler = StandardScaler().fit(xyz)
+    #     # xyz = scaler.transform(xyz)
+    #     self.meanshifter = MeanShift(n_jobs=7).fit(xyz)
+    #     return self.meanshifter.labels_
 
