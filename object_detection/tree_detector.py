@@ -46,7 +46,7 @@ class DetectorTree:
         # Masks
         self.ground_mask = self.raw_points['Classification'] == 2
         self.n_returns_mask = self.raw_points['NumberOfReturns'] < 2
-        self.n_many_returns_mask = self.raw_points['ReturnNumber'] >= 1
+        self.many_returns_mask = self.raw_points['ReturnNumber'] >= 1
         masks = np.vstack([self.ground_mask, self.n_returns_mask])
         self.masks = np.sum(masks, axis=0) == 0
 
@@ -55,6 +55,7 @@ class DetectorTree:
                                               'Y': [],
                                               'Z': []
                                               })
+
         self.tree_df = GeoDataFrame({'xy_clusterID': [],
                                      'geometry': [],
                                      "meanZ": [],
@@ -63,6 +64,7 @@ class DetectorTree:
                                      "NY": [],
                                      "NZ": [],
                                      "Coplanar": []})
+
         # for easy visualiziation
         df_to_pg(GeoDataFrame(
             data={'what': 'boundingbox',
@@ -156,7 +158,7 @@ class DetectorTree:
                 points = points.drop(points.groupby('Classification').get_group(name).index)
                 msg = f'dropped {name} because less than 3 pts/m2'
             except:
-                msg = 'FAILED ' + msg
+                msg = 'dropping with less than 8 pts FAILED'
                 pass
             print(msg)
 
@@ -166,6 +168,7 @@ class DetectorTree:
                 points = points.drop(points.groupby('Classification').get_group(name).index)
                 print(f'dropped {name} because polygon is too big')
             except:
+                print('dropping after too big area failed! ')
                 pass
 
         # elif np.percentile(group.HAG, 90) < 1.5:
@@ -210,7 +213,7 @@ class DetectorTree:
         """
         # remove ground points
         # cluster_points = self.raw_points[self.ground_mask.__invert__()]
-        cluster_points = self.raw_points[self.n_many_returns_mask]
+        cluster_points = self.raw_points[self.many_returns_mask]
         # cluster_points = self.raw_points.copy()
 
         # do i need to pre-process?
@@ -239,7 +242,7 @@ class DetectorTree:
         self.xy_grouped_points = grouped_points.rename(columns={'index_right': 'polygon_id'})
 
 
-    def kmean_cluster(self, xy_grouped_points):
+    def kmean_cluster(self, xy_grouped_points, round_val):
         """
 
         :param xy_grouped_points: [GeoPandasDataFrame]: the points classified per polygon
@@ -279,7 +282,8 @@ class DetectorTree:
                 to_cluster = self.second_filter(group.to_records())
                 # actual kmeans clustering.
                 kmeans_labels = self.kmean_cluster_group(group=to_cluster,
-                                                         name=name)
+                                                         name=name,
+                                                         round_val=round_val)
                 # Create the new labs dataframe
                 new_labs = pd.DataFrame(data={'labs': kmeans_labels,
                                               'pid': to_cluster.pid,
@@ -322,7 +326,7 @@ class DetectorTree:
                      self.kmean_grouped_points[['value_clusterID', 'xy_clusterID']].values.astype(str)]
         self.kmean_grouped_points['Classification'] = pd.factorize(combi_ids)[0]
 
-    def kmean_cluster_group(self, group, name):
+    def kmean_cluster_group(self, group, name, round_val):
         """
         Kmeans clustering performed on a subset (tree or cluster of trees) of points
 
@@ -337,19 +341,6 @@ class DetectorTree:
         cluster_data = np.array([group.X,
                                  group.Y,
                                  group.HAG]).T
-
-        # Number of clusters is found, necessary for kmeans
-        # :TODO allometric scaling????
-        Z = group.HAG.mean()
-        allom = 3.09632 + 0.00895 * Z ** 2
-        former_round_val = allom * 0.3
-        round_val = Z * 0.2
-        round_val = max(round_val, 0.25)
-        round_val = 3
-
-        print(f'Z: {round(Z,2)} \t'
-              f'former round value: {round(former_round_val,2)} \t'
-              f'round_val: {round(round_val,2)}')
 
         n_clusters, coordinates = \
             find_n_clusters_peaks(cluster_data=cluster_data
@@ -427,11 +418,13 @@ class DetectorTree:
             out_points = points.copy()
         return pd.DataFrame(out_points)
 
-    # def kmean_cluster_group(self, group, name):
-    #     xyz = np.array([group.X, group.Y]).T
-    #     from sklearn.preprocessing import StandardScaler
-    #     # scaler = StandardScaler().fit(xyz)
-    #     # xyz = scaler.transform(xyz)
-    #     self.meanshifter = MeanShift(n_jobs=7).fit(xyz)
-    #     return self.meanshifter.labels_
+    def kmean_cluster_group(self, group, name, round_val):
+        xyz = np.array([group.X, group.Y]).T
+        from sklearn.preprocessing import StandardScaler
+        # scaler = StandardScaler().fit(xyz)
+        # xyz = scaler.transform(xyz)
+        self.meanshifter = MeanShift(n_jobs=7,
+                                     max_iter=300,
+                                     bin_seeding=True).fit(xyz)
+        return self.meanshifter.labels_
 
