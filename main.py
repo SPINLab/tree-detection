@@ -39,8 +39,12 @@ box = 122287.4, 483709.0, 122398.8, 483781.5
 # Stukje kerngis
 box = 123727.2, 482705.0, 123949.8, 482846.3
 
+
+kerngis_ding = 'POLYGON((125935.34666449 484750.6,125938.349100001 484781.937500001,125935.5211 484849.719500003,125936.107099999 484861.906500002,125937.0601 484881.625500001,125940.576099999 484900.000500002,125947.870231801 484916.8,126074.2 484916.8,126074.2 484750.6,125935.34666449 484750.6))'
+
 # defining the object that holds the points, tha mask and more
-tree = DetectorTree(box)
+tree = DetectorTree(kerngis_ding)
+
 tree.hdbscan_on_points(min_cluster_size=30, min_samples=10, xyz=False)
 tree.convex_hullify(points=tree.clustered_points)
 df_to_pg(tree.tree_df, schema='bomen', table_name='xy_bomen')

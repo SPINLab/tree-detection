@@ -5,6 +5,7 @@ import traceback
 import numpy as np
 import pandas as pd
 import pdal
+import shapely
 from geopandas import GeoDataFrame, sjoin
 from hdbscan import HDBSCAN
 from scipy.spatial.qhull import ConvexHull
@@ -25,20 +26,21 @@ class DetectorTree:
 
     '''
 
-    def __init__(self, box):
+    def __init__(self, wkt_geometry):
         """
         Initialize the tree class holding all the points
         :param box: a tuple of (xmin, xmax, ymin, ymax)
 
         """
         # initialize the boundary box in 3 ways
-        self.xmin, self.ymin, self.xmax, self.ymax = box
-        self.geom_box = geometry.box(self.xmin, self.ymin, self.xmax, self.ymax)
-        self.wkt_box = self.geom_box.wkt
+        # self.xmin, self.ymin, self.xmax, self.ymax = box
+        # self.geom_box = geometry.box(self.xmin, self.ymin, self.xmax, self.ymax)
+        # self.wkt_box = self.geom_box.wkt
+        self.wkt_geometry = wkt_geometry
 
         # read points from the ept
         start = time.time()
-        self.raw_points = ept_reader(self.wkt_box)
+        self.raw_points = ept_reader(self.wkt_geometry)
         end = time.time()
         print(f'reading from the ept took {round(end - start, 2)}')
         print(f'Total amount of points read: {self.raw_points.shape[0]}')
@@ -46,7 +48,7 @@ class DetectorTree:
         # Masks
         self.ground_mask = self.raw_points['Classification'] == 2
         self.n_returns_mask = self.raw_points['NumberOfReturns'] < 2
-        self.many_returns_mask = self.raw_points['ReturnNumber'] >= 1
+        self.n_many_returns_mask = self.raw_points['ReturnNumber'] >= 1
         masks = np.vstack([self.ground_mask, self.n_returns_mask])
         self.masks = np.sum(masks, axis=0) == 0
 
@@ -55,7 +57,6 @@ class DetectorTree:
                                               'Y': [],
                                               'Z': []
                                               })
-
         self.tree_df = GeoDataFrame({'xy_clusterID': [],
                                      'geometry': [],
                                      "meanZ": [],
@@ -64,11 +65,10 @@ class DetectorTree:
                                      "NY": [],
                                      "NZ": [],
                                      "Coplanar": []})
-
         # for easy visualiziation
         df_to_pg(GeoDataFrame(
             data={'what': 'boundingbox',
-                  'geometry': self.geom_box},
+                  'geometry': shapely.wkt.loads(self.wkt_geometry)},
             index=[0]),
             schema='bomen',
             table_name='bbox')
@@ -158,7 +158,7 @@ class DetectorTree:
                 points = points.drop(points.groupby('Classification').get_group(name).index)
                 msg = f'dropped {name} because less than 3 pts/m2'
             except:
-                msg = 'dropping with less than 8 pts FAILED'
+                msg = 'FAILED ' + msg
                 pass
             print(msg)
 
@@ -168,7 +168,6 @@ class DetectorTree:
                 points = points.drop(points.groupby('Classification').get_group(name).index)
                 print(f'dropped {name} because polygon is too big')
             except:
-                print('dropping after too big area failed! ')
                 pass
 
         # elif np.percentile(group.HAG, 90) < 1.5:
@@ -213,7 +212,7 @@ class DetectorTree:
         """
         # remove ground points
         # cluster_points = self.raw_points[self.ground_mask.__invert__()]
-        cluster_points = self.raw_points[self.many_returns_mask]
+        cluster_points = self.raw_points[self.n_many_returns_mask]
         # cluster_points = self.raw_points.copy()
 
         # do i need to pre-process?
@@ -240,7 +239,6 @@ class DetectorTree:
         print(f'Removed {np.array([grouped_points.xy_clusterID < 0]).sum()} noise points')
         grouped_points = grouped_points[grouped_points.xy_clusterID >= 0]
         self.xy_grouped_points = grouped_points.rename(columns={'index_right': 'polygon_id'})
-
 
     def kmean_cluster(self, xy_grouped_points, round_val):
         """
@@ -349,7 +347,6 @@ class DetectorTree:
                                   , round_val=round_val
                                   )
 
-
         # to add initial cluster points
         if n_clusters > 1:
             # if False:
@@ -362,7 +359,8 @@ class DetectorTree:
                              index=[name] * len(coordinates.T[0])))
 
             # TODO max iter??
-            kmeans = KMeans(n_clusters=n_clusters, max_iter=1, init=np.array(coordinates), n_init=1).fit(cluster_data)
+            kmeans = KMeans(n_clusters=n_clusters, max_iter=1, init=np.array(coordinates), n_init=1).fit(
+                cluster_data)
         else:
             # Add point to data
             centroid = cluster_data.mean(axis=0)
@@ -418,13 +416,11 @@ class DetectorTree:
             out_points = points.copy()
         return pd.DataFrame(out_points)
 
-    def kmean_cluster_group(self, group, name, round_val):
-        xyz = np.array([group.X, group.Y]).T
-        from sklearn.preprocessing import StandardScaler
-        # scaler = StandardScaler().fit(xyz)
-        # xyz = scaler.transform(xyz)
-        self.meanshifter = MeanShift(n_jobs=7,
-                                     max_iter=300,
-                                     bin_seeding=True).fit(xyz)
-        return self.meanshifter.labels_
+    # def kmean_cluster_group(self, group, name):
+    #     xyz = np.array([group.X, group.Y]).T
+    #     from sklearn.preprocessing import StandardScaler
+    #     # scaler = StandardScaler().fit(xyz)
+    #     # xyz = scaler.transform(xyz)
+    #     self.meanshifter = MeanShift(n_jobs=7).fit(xyz)
+    #     return self.meanshifter.labels_
 

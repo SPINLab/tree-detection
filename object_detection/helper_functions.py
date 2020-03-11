@@ -146,10 +146,6 @@ def find_n_clusters_peaks(cluster_data, round_val, min_dist):
     # :TODO Exaggerate height? Z*Z?
     img, minx, miny = interpolate_df(cluster_data, round_val)
 
-    # peak_local_max options
-    # :TODO do better
-    # num_peaks : int, optional
-    # threshold_rel : float, optional
     indices = peak_local_max(img, min_distance=min_dist)
 
     n_cluster = indices.shape[0]
@@ -207,6 +203,7 @@ def df_to_pg(input_gdf,
              host='leda.geodan.nl',
              username='arnot',
              password=''):
+
     geo_dataframe = input_gdf.copy().reset_index()
     geom_type = geo_dataframe.geometry.geom_type[0]
     engine = create_engine(f'postgresql://{username}@{host}:{port}/{database}')
