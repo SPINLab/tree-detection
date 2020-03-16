@@ -133,7 +133,10 @@ class DetectorTree:
         for name, group in points.groupby('Classification'):
             if group.shape[0] <= 3:
                 # remove polygons that contain too little points to hullify around
-                points.drop(points.groupby('Classification').get_group(name).index)
+                try:
+                    points.drop(points.groupby('Classification').get_group(name).index)
+                except:
+                    pass
             else:
                 # performs convexhull
                 coords = np.array([group.X, group.Y]).T
