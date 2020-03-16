@@ -147,17 +147,21 @@ def find_n_clusters_peaks(cluster_data, round_val, min_dist):
     img, minx, miny = interpolate_df(cluster_data, round_val)
 
     indices = peak_local_max(img, min_distance=min_dist)
+    # print(indices)
 
-    n_cluster = indices.shape[0]
+    indices = [list(x) for x in set(tuple(b) for b in indices)]
+    n_clusters = len(indices)
 
     # TODO return coordinates
-    mins = [[minx, miny, 0]] * indices.shape[0]
+    mins = [[minx, miny, 0]] * n_clusters # indices.shape[0]
     z = [img[i[0], i[1]] for i in indices]
-    round_val_for_map = [round_val] * n_cluster
+    round_val_for_map = [round_val] * n_clusters
     mapped = map(add_vectors, zip(indices, mins, z, round_val_for_map))
     coordinates = [coord for coord in mapped]
+    coordinates = [list(x) for x in set(tuple(b) for b in coordinates)]
 
-    return max(1, n_cluster), coordinates
+
+    return max(1, n_clusters), coordinates
 
 
 def add_vectors(vec):
@@ -171,7 +175,7 @@ def interpolate_df(xyz_points, round_val):
     xyz_points = xyz_points.T
     xyz_points = pd.DataFrame({'X': xyz_points[0],
                                'Y': xyz_points[1],
-                               'Z': xyz_points[2]})
+                               'Z': xyz_points[2] ** 2})
 
     xyz_points['x_round'] = round_to_val(xyz_points.X, round_val)
     xyz_points['y_round'] = round_to_val(xyz_points.Y, round_val)
@@ -187,7 +191,7 @@ def interpolate_df(xyz_points, round_val):
     img_size_x = int(round(max(x_arr), 1))
     img_size_y = int(round(max(y_arr), 1))
 
-    img = np.zeros([img_size_x + 200, img_size_y + 200])
+    img = np.zeros([img_size_y + 1, img_size_x + 1])
 
     img[round_to_val(y_arr / round_val, 1).astype(np.int),
         round_to_val(x_arr / round_val, 1).astype(np.int)] = binned_data.Z
@@ -210,6 +214,7 @@ def df_to_pg(input_gdf,
     geo_dataframe['geom'] = geo_dataframe['geometry'].apply(lambda x: WKTElement(x.wkt, srid=28992))
     geo_dataframe.drop('geometry', 1, inplace=True)
     print(f'warning! For now everything in {table_name} is replaced!!!')
+    geo_dataframe.columns = [col.lower() for col in geo_dataframe.columns]
 
     geo_dataframe.to_sql(table_name,
                          engine,

@@ -152,8 +152,8 @@ class DetectorTree:
                 points = self.add_group_to_result(group, kmean_pols, name, points, wkt)
 
     def add_group_to_result(self, group, kmean_pols, name, points, wkt):
-        # if there are less than 8 points per square meter; it's not a tree
-        if (group.shape[0] / loads(wkt).area) <= 3:
+        # if there are less than 3 points per square meter; it's not a tree
+        if False:# (group.shape[0] / loads(wkt).area) <= 3:
             try:
                 points = points.drop(points.groupby('Classification').get_group(name).index)
                 msg = f'dropped {name} because less than 3 pts/m2'
@@ -278,6 +278,7 @@ class DetectorTree:
                 # run through second pdal filter
                 # :TODO under construction
                 to_cluster = self.second_filter(group.to_records())
+                # to_cluster = group.to_records()
                 # actual kmeans clustering.
                 kmeans_labels = self.kmean_cluster_group(group=to_cluster,
                                                          name=name,
@@ -319,9 +320,9 @@ class DetectorTree:
             self.kmean_grouped_points[col] = eval(f'labs.{col}')
 
         # factorize the cluster labels
-        # :TODO do something so all -1 values are removed
         combi_ids = ["".join(row) for row in
-                     self.kmean_grouped_points[['value_clusterID', 'xy_clusterID']].values.astype(str)]
+                     self.kmean_grouped_points[['value_clusterID', 'xy_clusterID']].values.astype(str)
+                     if '-1' not in row]
         self.kmean_grouped_points['Classification'] = pd.factorize(combi_ids)[0]
 
     def kmean_cluster_group(self, group, name, round_val):
@@ -338,7 +339,8 @@ class DetectorTree:
         # Clustering is performed on only x y and z
         cluster_data = np.array([group.X,
                                  group.Y,
-                                 group.HAG]).T
+                                 group.Z]).T
+        print(f'finding cluster centres for {name}')
 
         n_clusters, coordinates = \
             find_n_clusters_peaks(cluster_data=cluster_data
@@ -349,7 +351,6 @@ class DetectorTree:
 
         # to add initial cluster points
         if n_clusters > 1:
-            # if False:
             coordinates = np.array(coordinates)
             # Add points to data
             self.tree_coords = self.tree_coords.append(
@@ -357,12 +358,15 @@ class DetectorTree:
                                    'Y': coordinates.T[1],
                                    'Z': coordinates.T[2]},
                              index=[name] * len(coordinates.T[0])))
-
+            print(cluster_data.shape, coordinates.shape)
             # TODO max iter??
-            kmeans = KMeans(n_clusters=n_clusters, max_iter=1, init=np.array(coordinates), n_init=1).fit(
+            kmeans = KMeans(n_clusters=n_clusters, max_iter=1000, init=np.array(coordinates), n_init=1).fit(
                 cluster_data)
         else:
             # Add point to data
+            print(f'n_clusters:: {n_clusters} \t '
+                  f'n_pts = {cluster_data.shape[0]} \t '
+                  f'{cluster_data.shape[0] / n_clusters} pts/clst')
             centroid = cluster_data.mean(axis=0)
             self.tree_coords = self.tree_coords.append(
                 pd.DataFrame(data={'X': centroid[0],
