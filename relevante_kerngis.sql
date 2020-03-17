@@ -15,3 +15,27 @@ drop table if exists kerngis.relevante_lijnen;
 create table kerngis.relevante_lijnen as (
 select * from kerngis.groen_lijnen where soort in ('BR')
 );
+
+create table polygonized as(
+SELECT ST_Buffer(geom, 0.5) geom
+ FROM kerngis.relevante_punten
+
+ UNION
+
+SELECT ST_Buffer(geom, 0.5) geom
+FROM kerngis.relevante_lijnen
+
+ UNION
+
+SELECT geom
+FROM kerngis.relevante_vlakken
+);
+
+-- selct 'relevant' trees from results
+drop table if exists results.km_bomen;
+create table results.km_bomen as(
+	select *, n_pts / st_area(geom) n
+	from bomen.km_bomen
+	where n_pts / st_area(geom) >= 5 AND
+	ST_Area(geom) >= 2
+);
