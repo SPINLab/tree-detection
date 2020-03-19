@@ -1,75 +1,50 @@
-### local_maxima
-from geopandas import GeoDataFrame
-from shapely.geometry import Point
+import psycopg2
 
-from object_detection.helper_functions import df_to_pg, dataframe_to_laz, get_colors
+from object_detection.helper_functions import df_to_pg, dataframe_to_laz, color_clusters, execute_query
 from object_detection.tree_detector import DetectorTree
-import numpy as np
 
 # losse bomen en clusters
 # box = 122539.6, 490351.4, 122607.8, 490403.6
 
-# groter stukje
-# box = 122577.4, 483763.5, 122720.1, 483854.5
+# test area for refactored code
+kerngis_test_area = 'POLYGON((125935.34666449 484750.6,125938.349100001 484781.937500001,125935.5211 484849.719500003,125936.107099999 484861.906500002,125937.0601 484881.625500001,125940.576099999 484900.000500002,125947.870231801 484916.8,126074.2 484916.8,126074.2 484750.6,125935.34666449 484750.6))'
 
-# stukje met daken
-# box = 121970.5, 483782.7, 122107.5, 483871.9
+# Tweak yourself!
+dbhost = 'host_name'
+dbname = 'db_name'
+port = '5432'
+user = 'user_name'
+password = 'secret'
 
-# heel groot stuk met daken!
-# box = 121898.8, 483741.2, 122172.7, 483919.5
+schema = 'kerngis'
+table = 'beheergebied'
+where = 'objectid = 99'
 
-# heel klein stukje
-# box = 122544, 490380, 122553, 490386
+# defining the object that holds the points, the masks and more
+if __name__ == '__main__':
+    leda = psycopg2.connect(
+        host=dbhost,
+        database=dbname,
+        port=port,
+        user=user,
+        connect_timeout=5)
 
-# stammen
-box = 122287.4, 483709.0, 122398.8, 483781.5
+    results, _ = execute_query(leda,
+                               f'SELECT ST_AsText(geom) geom FROM {schema}.{table} WHERE {where}' )
 
-# GROOOOOOOT ring a 10 stuk? misschien wel grootst mogelijk....
-# box = 125889.8,489393.5 , 126516.1,489791.3
+    tree = DetectorTree(results[0]['geom'])
 
-# homogene bomenrij
-# box = 126056.9,489631.9, 126132.1,489698.9
+    # first clustering step
+    tree.hdbscan_on_points(min_cluster_size=30, min_samples=10, xyz=False)
+    tree.convex_hullify(points=tree.clustered_points)
+    df_to_pg(tree.tree_df, schema='bomen', table_name='xy_bomen')
 
-# klein stukje a10
-# box = 126014.7, 489644.0, 126055.8,489680.6
+    # second cluster step
+    tree.find_points_in_polygons(tree.tree_df)
+    tree.kmean_cluster(tree.xy_grouped_points, round_val=2)
+    tree.convex_hullify(tree.kmean_grouped_points, kmean_pols=True)
+    df_to_pg(tree.tree_df, schema='bomen', table_name='km_bomen')
 
-# dak
-# box = 122317.5,483749.3, 122443.9,483838.5
-
-# Stukje kerngis
-box = 123727.2, 482705.0, 123949.8, 482846.3
-
-
-kerngis_ding = 'POLYGON((125935.34666449 484750.6,125938.349100001 484781.937500001,125935.5211 484849.719500003,125936.107099999 484861.906500002,125937.0601 484881.625500001,125940.576099999 484900.000500002,125947.870231801 484916.8,126074.2 484916.8,126074.2 484750.6,125935.34666449 484750.6))'
-
-# defining the object that holds the points, tha mask and more
-tree = DetectorTree(kerngis_ding)
-
-tree.hdbscan_on_points(min_cluster_size=30, min_samples=10, xyz=False)
-tree.convex_hullify(points=tree.clustered_points)
-df_to_pg(tree.tree_df, schema='bomen', table_name='xy_bomen')
-
-tree.find_points_in_polygons(tree.tree_df)
-tree.kmean_cluster(tree.xy_grouped_points, round_val=2)
-tree.convex_hullify(tree.kmean_grouped_points, kmean_pols=True)
-df_to_pg(tree.tree_df, schema='bomen', table_name='km_bomen')
-
-# write stammen-points to db
-tree.tree_coords['geometry'] = [Point(x, y) for x, y, z in zip(tree.tree_coords.X,
-                                                               tree.tree_coords.Y,
-                                                               tree.tree_coords.Z)]
-tree.tree_coords = GeoDataFrame(tree.tree_coords, geometry='geometry')
-df_to_pg(tree.tree_coords, schema='bomen', table_name='stammen')
-
-
-# colors/visualizing
-colors = get_colors(len(np.unique(tree.kmean_grouped_points['Classification'])))
-write_df = tree.kmean_grouped_points[['pid',
-                                      'X', 'Y', 'Z',
-                                      # 'Red', 'Green', 'Blue',
-                                      'ReturnNumber', 'Classification']]
-for i, color in enumerate(['Red', 'Green', 'Blue']):
-    col = write_df.apply(lambda row: colors[int(row['Classification'])][i], axis=1)
-    write_df.loc[:, color] = col
-
-dataframe_to_laz(write_df, 'tst_fn.laz')
+    # hacky colors/visualizing
+    write_df = color_clusters(tree.kmean_grouped_points)
+    dataframe_to_laz(write_df, 'point_output.laz')

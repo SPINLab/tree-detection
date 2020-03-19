@@ -9,7 +9,6 @@ import shapely
 from geopandas import GeoDataFrame, sjoin
 from hdbscan import HDBSCAN
 from scipy.spatial.qhull import ConvexHull
-from shapely import geometry
 from shapely.geometry import Point
 from shapely.wkt import loads
 from sklearn.cluster import KMeans, MeanShift

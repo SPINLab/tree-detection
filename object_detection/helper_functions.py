@@ -12,6 +12,11 @@ from skimage.feature import peak_local_max
 from sqlalchemy import create_engine
 from retry import retry
 
+import json
+from typing import Dict, Tuple, Optional, List, Any
+from psycopg2.extras import DictCursor
+import psycopg2
+
 
 @retry(tries=5, delay=1, backoff=3, max_delay=30)
 def ept_reader(polygon_wkt: str) -> np.ndarray:
@@ -228,6 +233,18 @@ def former_preprocess_now_add_pid(points):
     return f_pts
 
 
+def color_clusters(grouped_points):
+    colors = get_colors(len(np.unique(grouped_points['Classification'])))
+    output_dataframe = grouped_points[['pid',
+                                       'X', 'Y', 'Z',
+                                       'ReturnNumber', 'Classification']]
+    for i, color in enumerate(['Red', 'Green', 'Blue']):
+        col = output_dataframe.apply(lambda row: colors[int(row['Classification'])][i], axis=1)
+        output_dataframe.loc[:, color] = col
+
+    return output_dataframe
+
+
 def get_colors(n):
     cols = 100 * [[0, 0, 0], [1, 0, 103], [213, 255, 0], [255, 0, 86], [158, 0, 142], [14, 76, 161], [255, 229, 2],
                   [0, 95, 57], [0, 255, 0], [149, 0, 58], [255, 147, 126], [164, 36, 0], [0, 21, 68], [145, 208, 203],
@@ -242,3 +259,40 @@ def get_colors(n):
                   [255, 110, 65], [232, 94, 190]]
 
     return sample(cols, n)
+
+def execute_query(connection: psycopg2.extensions.connection, query: str, query_parameters: tuple = None
+                      ) -> Tuple[Optional[List[dict]], Optional[Dict[str, Any]]]:
+        """
+        Functie om de database connecties uit connect_databases.py te gebruiken om informatie op te vragen of wijzigingen
+        te doen in de database.
+        Benodigde input is de database connectie van de bonvengenoemde functie, die in het voorbeeld in een dictionary staat
+        en een query op de in de functie ingevoerde database. Optioneel zijn andere parameters
+        die psycopg2 accepteerd, zie:
+        http://initd.org/psycopg/docs/usage.html
+        http://initd.org/psycopg/docs/cursor.html
+        """
+        if connection.closed:
+            print(f"Reconnecting closed connection to {connection.get_dsn_parameters()['dbname']}")
+        try:
+            # Following http://initd.org/psycopg/docs/faq.html#best-practices
+            # And https://stackoverflow.com/questions/21158033/query-from-postgresql-using-python-as-dictionary#21158697
+            with connection.cursor(cursor_factory=DictCursor) as cursor:
+                print(f'Executing query {query} with {query_parameters}')
+                cursor.execute(query, query_parameters)
+                try:
+                    results = [dict(row) for row in cursor]
+                # no records have returned
+                except psycopg2.ProgrammingError:
+                    results = []
+                connection.commit()
+        except Exception as e:
+            print(
+                f"Error: {e}, \ndatabase: {connection.get_dsn_parameters()['dbname']}, \nquery: {query}, \nparameters: "
+                f"{query_parameters}")
+            connection.rollback()
+            error = {
+                'response_json': json.dumps({'error': {'response_code': '400', 'reason': str(e)}}),
+                'status_code': 400
+            }
+            return None, error
+        return results, None
