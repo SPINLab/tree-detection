@@ -34,7 +34,7 @@ def ept_reader(polygon_wkt: str) -> np.ndarray:
     """
     polygon = loads(polygon_wkt)
     bbox = polygon.bounds
-    ept_location: str = 'https://beta.geodan.nl/maquette/colorized-points/ahn3_nl/ept-subsets/ept.json'
+    ept_location: str = '' # insert ept.json location of the tiled pointcloud
     bounds = f"([{bbox[0]},{bbox[2]}],[{bbox[1]},{bbox[3]}])"
 
     #:TODO poission sampling (0.25)

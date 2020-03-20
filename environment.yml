@@ -122,7 +122,7 @@ dependencies:
   - retry=0.9.2=py_0
   - rtree=0.9.3=py37h21ff451_0
   - scikit-image=0.16.2=py37h47e9c7a_0
-  - scikit-learn=0.21.2=py37h7208079_1
+  - scikit-learn=0.22.2.post1=py37h7208079_0
   - scipy=1.4.1=py37h9439919_0
   - setuptools=45.2.0=py37_0
   - shapely=1.7.0=py37h2130f3d_0
