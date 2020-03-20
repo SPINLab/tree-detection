@@ -32,6 +32,8 @@ if __name__ == '__main__':
     results, _ = execute_query(leda,
                                f'SELECT ST_AsText(geom) geom FROM {schema}.{table} WHERE {where}' )
 
+    # if no acces to test area:
+    # tree = DetectorTree(kerngis_test_area)
     tree = DetectorTree(results[0]['geom'])
 
     # first clustering step

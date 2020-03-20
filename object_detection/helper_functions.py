@@ -144,20 +144,28 @@ def dataframe_to_laz(dataframe, laz_fn, overwrite=True):
 
 
 def round_to_val(a, round_val):
+    """
+    :param a: numpy array to round
+    :param round_val: value to round to
+    :return: rounded numpy array
+    """
     return np.round(np.array(a, dtype=float) / round_val) * round_val
 
 
 def find_n_clusters_peaks(cluster_data, round_val, min_dist):
-    # :TODO Exaggerate height? Z*Z?
+    """
+    finds the number of local maxima and their coordinates in a pointcloud.
+
+    :param cluster_data: dattaframe with X Y and Z values
+    :param round_val: the grid size of the raster to detect peaks in
+    :param min_dist: minimal distance of the peaks
+    :return: returns number of peaks and the coordinates of the peaks
+    """
     img, minx, miny = interpolate_df(cluster_data, round_val)
-
     indices = peak_local_max(img, min_distance=min_dist)
-    # print(indices)
-
     indices = [list(x) for x in set(tuple(b) for b in indices)]
     n_clusters = len(indices)
 
-    # TODO return coordinates
     mins = [[minx, miny, 0]] * n_clusters  # indices.shape[0]
     z = [img[i[0], i[1]] for i in indices]
     round_val_for_map = [round_val] * n_clusters
@@ -169,6 +177,13 @@ def find_n_clusters_peaks(cluster_data, round_val, min_dist):
 
 
 def add_vectors(vec):
+    """
+    utility for summing vectors
+
+    :param vec: vectors to add. Should contain 3 values,
+     coordinates, minima and z values
+    :return: a vector of summed vectors
+    """
     coords, mins, z, round_val = vec
     y, x = coords
     minx, miny, minz = mins
@@ -176,6 +191,7 @@ def add_vectors(vec):
 
 
 def interpolate_df(xyz_points, round_val):
+
     xyz_points = xyz_points.T
     xyz_points = pd.DataFrame({'X': xyz_points[0],
                                'Y': xyz_points[1],

@@ -11,7 +11,7 @@ from hdbscan import HDBSCAN
 from scipy.spatial.qhull import ConvexHull
 from shapely.geometry import Point
 from shapely.wkt import loads
-from sklearn.cluster import KMeans, MeanShift
+from sklearn.cluster import KMeans
 
 from object_detection.helper_functions import \
     find_n_clusters_peaks, \
@@ -31,13 +31,11 @@ class DetectorTree:
         :param box: a tuple of (xmin, xmax, ymin, ymax)
 
         """
-        # initialize the boundary box in 3 ways
-        # self.xmin, self.ymin, self.xmax, self.ymax = box
-        # self.geom_box = geometry.box(self.xmin, self.ymin, self.xmax, self.ymax)
-        # self.wkt_box = self.geom_box.wkt
+
+        # initialize bounding box
         self.wkt_geometry = wkt_geometry
 
-        # read points from the ept
+        # read points from the entwine point tiles
         start = time.time()
         self.raw_points = ept_reader(self.wkt_geometry)
         end = time.time()
@@ -155,7 +153,7 @@ class DetectorTree:
 
     def add_group_to_result(self, group, kmean_pols, name, points, wkt):
         # if there are less than 3 points per square meter; it's not a tree
-        if False:# (group.shape[0] / loads(wkt).area) <= 3:
+        if (group.shape[0] / loads(wkt).area) <= 3:
             try:
                 points = points.drop(points.groupby('Classification').get_group(name).index)
                 msg = f'dropped {name} because less than 3 pts/m2'
@@ -172,24 +170,23 @@ class DetectorTree:
             except:
                 pass
 
-        # elif np.percentile(group.HAG, 90) < 1.5:
+        # If the tree is smaller than 2 meters, it's not a tree.
         elif group.HAG.max() < 2:
             try:
                 points = points.drop(points.groupby('Classification').get_group(name).index)
                 print(f'dropped {name} the so called tree is too small < 1.5 m')
             except:
                 pass
-
+        # If most of the points point up; it's not a tree.
         elif kmean_pols and group.NormalZ.mean() > 0.7:
             try:
                 points = points.drop(points.groupby('Classification').get_group(name).index)
-                print(f'dropped {name} the so called tree is too flat (nz > 0.7')
+                print(f'dropped {name} the so called tree is too flat nz > 0.7')
             except:
                 pass
 
+        # If more selection criteria are wanted, they go here.
 
-        # here goes more selection of polygons
-        # :TODO put all the elifs and the write to df in own function?
         else:
             # write to df
             self.tree_df.loc[len(self.tree_df)] = [int(name),
@@ -213,11 +210,8 @@ class DetectorTree:
         :return: writes to self.xy_grouped_points
         """
         # remove ground points
-        # cluster_points = self.raw_points[self.ground_mask.__invert__()]
         cluster_points = self.raw_points[self.n_many_returns_mask]
-        # cluster_points = self.raw_points.copy()
 
-        # do i need to pre-process?
         cluster_data = former_preprocess_now_add_pid(
             cluster_points[['X', 'Y', 'Z',
                             'Red', 'Green', 'Blue',
@@ -252,7 +246,6 @@ class DetectorTree:
 
         :return: writes to self.kmean_grouped_points
         """
-        # TODO: see if it is possible to use initial clusterpoints
         # Initialize dataframes to write to
         to_cluster = pd.DataFrame(data={'pid': []})
         labs = pd.DataFrame(data={'labs': [0] * len(xy_grouped_points.pid),
@@ -274,17 +267,17 @@ class DetectorTree:
             except Exception as E:
                 pass
 
-            # A tree needs to be bigger than 2 meters2 and have more than 10 points
+            # A tree needs to be bigger than 2 meters^2 and have more than 10 points
             if name >= 0 and tree_area >= 2 and group.shape[0] >= 50:
                 group = group.drop(['geometry'], axis=1)
                 # run through second pdal filter
-                # :TODO under construction
                 to_cluster = self.second_filter(group.to_records())
-                # to_cluster = group.to_records()
+
                 # actual kmeans clustering.
                 kmeans_labels = self.kmean_cluster_group(group=to_cluster,
                                                          name=name,
                                                          round_val=round_val)
+
                 # Create the new labs dataframe
                 new_labs = pd.DataFrame(data={'labs': kmeans_labels,
                                               'pid': to_cluster.pid,
@@ -309,7 +302,6 @@ class DetectorTree:
                 )
 
             else:
-                # :TODO if tree too small or not enough points, drop the points instead of adding ids
                 new_labs = pd.DataFrame(data={'labs': [-1] * len(group.pid),
                                               'pid': to_cluster.pid},
                                         index=group.pid)
@@ -331,6 +323,7 @@ class DetectorTree:
         """
         Kmeans clustering performed on a subset (tree or cluster of trees) of points
 
+        :param name: the cluster id of the group
         :param group: [pd.DataFrame]The points including x y and z columns
         :param min_dist: see find_n_clusters_peaks
         :param relative_threshold: see find_n_clusters_peaks
@@ -346,7 +339,7 @@ class DetectorTree:
 
         n_clusters, coordinates = \
             find_n_clusters_peaks(cluster_data=cluster_data
-                                  # is rounded to a multiple of the gridsize
+                                  # distance is rounded to a multiple of the gridsize
                                   , min_dist=1
                                   , round_val=round_val
                                   )
@@ -421,12 +414,3 @@ class DetectorTree:
 
             out_points = points.copy()
         return pd.DataFrame(out_points)
-
-    # def kmean_cluster_group(self, group, name):
-    #     xyz = np.array([group.X, group.Y]).T
-    #     from sklearn.preprocessing import StandardScaler
-    #     # scaler = StandardScaler().fit(xyz)
-    #     # xyz = scaler.transform(xyz)
-    #     self.meanshifter = MeanShift(n_jobs=7).fit(xyz)
-    #     return self.meanshifter.labels_
-
