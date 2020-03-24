@@ -31,7 +31,7 @@ SELECT geom
 FROM kerngis.relevante_vlakken
 );
 
--- selct 'relevant' trees from results
+-- select 'relevant' trees from results
 drop table if exists results.km_bomen;
 create table results.km_bomen as(
 	select *, n_pts / st_area(geom) n
